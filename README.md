@@ -1,2 +1,3 @@
-# media-scanner
-Finding duplicates, etc
+# macos-media-scanner
+
+Finding duplicates, etc in Mac OS Photos app
