@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -91,6 +91,24 @@ MIGRATIONS: dict[int, list[str]] = {
         CREATE TABLE IF NOT EXISTS scan_metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        )
+        """,
+    ],
+    2: [
+        """
+        CREATE TABLE IF NOT EXISTS metadata_transfers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keeper_uuid TEXT NOT NULL,
+            group_id INTEGER NOT NULL,
+            transfer_date TEXT,
+            transfer_latitude REAL,
+            transfer_longitude REAL,
+            source_uuid TEXT,
+            created_at TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0,
+            applied_at TEXT,
+            error_message TEXT,
+            FOREIGN KEY (keeper_uuid) REFERENCES media_items(uuid)
         )
         """,
     ],

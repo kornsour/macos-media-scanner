@@ -15,6 +15,7 @@ from media_scanner.data.models import (
     MatchType,
     MediaItem,
     MediaType,
+    MetadataTransfer,
 )
 
 
@@ -332,6 +333,70 @@ class CacheDB:
 
     def clear_pending_actions(self) -> None:
         self.conn.execute("DELETE FROM actions WHERE applied = 0")
+        self.conn.commit()
+
+    # ── Metadata Transfers ─────────────────────────────────
+
+    def save_metadata_transfer(self, transfer: MetadataTransfer) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO metadata_transfers (
+                keeper_uuid, group_id, transfer_date,
+                transfer_latitude, transfer_longitude, source_uuid,
+                created_at, applied, applied_at, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                transfer.keeper_uuid,
+                transfer.group_id,
+                _dt_to_str(transfer.transfer_date),
+                transfer.transfer_latitude,
+                transfer.transfer_longitude,
+                transfer.source_uuid,
+                _dt_to_str(transfer.created_at),
+                int(transfer.applied),
+                _dt_to_str(transfer.applied_at),
+                transfer.error_message,
+            ),
+        )
+        self.conn.commit()
+
+    def get_pending_transfers(self) -> list[MetadataTransfer]:
+        rows = self.conn.execute(
+            "SELECT * FROM metadata_transfers WHERE applied = 0"
+        ).fetchall()
+        return [
+            MetadataTransfer(
+                keeper_uuid=r["keeper_uuid"],
+                group_id=r["group_id"],
+                transfer_date=_str_to_dt(r["transfer_date"]),
+                transfer_latitude=r["transfer_latitude"],
+                transfer_longitude=r["transfer_longitude"],
+                source_uuid=r["source_uuid"],
+                created_at=_str_to_dt(r["created_at"]) or datetime.now(),
+                applied=bool(r["applied"]),
+                applied_at=_str_to_dt(r["applied_at"]),
+                error_message=r["error_message"],
+            )
+            for r in rows
+        ]
+
+    def mark_transfer_applied(
+        self, keeper_uuid: str, group_id: int, error: str | None = None
+    ) -> None:
+        now = _dt_to_str(datetime.now())
+        self.conn.execute(
+            """
+            UPDATE metadata_transfers
+            SET applied = 1, applied_at = ?, error_message = ?
+            WHERE keeper_uuid = ? AND group_id = ? AND applied = 0
+            """,
+            (now, error, keeper_uuid, group_id),
+        )
+        self.conn.commit()
+
+    def clear_pending_transfers(self) -> None:
+        self.conn.execute("DELETE FROM metadata_transfers WHERE applied = 0")
         self.conn.commit()
 
     # ── Scan Metadata ────────────────────────────────────────

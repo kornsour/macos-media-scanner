@@ -84,3 +84,19 @@ class ActionRecord:
     created_at: datetime = field(default_factory=datetime.now)
     applied: bool = False
     applied_at: datetime | None = None
+
+
+@dataclass
+class MetadataTransfer:
+    """A pending metadata transfer from a duplicate to the keeper."""
+
+    keeper_uuid: str
+    group_id: int
+    transfer_date: datetime | None = None
+    transfer_latitude: float | None = None
+    transfer_longitude: float | None = None
+    source_uuid: str | None = None
+    created_at: datetime = field(default_factory=datetime.now)
+    applied: bool = False
+    applied_at: datetime | None = None
+    error_message: str | None = None

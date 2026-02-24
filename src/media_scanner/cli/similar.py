@@ -8,6 +8,7 @@ import typer
 
 from media_scanner.cli.app import get_config
 from media_scanner.core.auto_resolver import auto_resolve
+from media_scanner.core.metadata_merger import compute_transfers
 from media_scanner.core.quality_scorer import rank_group
 from media_scanner.core.similar_finder import find_similar_photos
 from media_scanner.data.cache import CacheDB
@@ -60,6 +61,8 @@ def similar(
     if limit > 0:
         groups = groups[:limit]
 
+    actions = []
+
     if auto:
         actions = auto_resolve(groups, config)
         for action in actions:
@@ -78,5 +81,17 @@ def similar(
         actions = session.run()
         for action in actions:
             cache.save_action(action)
+
+    # Compute and save metadata transfers
+    if actions:
+        items_by_uuid = {item.uuid: item for g in groups for item in g.items}
+        transfers = compute_transfers(actions, items_by_uuid)
+        for transfer in transfers:
+            cache.save_metadata_transfer(transfer)
+        if transfers:
+            console.print(
+                f"  [dim]{len(transfers)} metadata transfer(s) queued "
+                f"(date/GPS from duplicates to keepers).[/dim]"
+            )
 
     cache.close()

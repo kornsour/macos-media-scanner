@@ -13,6 +13,7 @@ from media_scanner.core.duplicate_finder import (
     find_near_duplicates,
     find_video_duplicates,
 )
+from media_scanner.core.metadata_merger import compute_transfers
 from media_scanner.core.quality_scorer import rank_group
 from media_scanner.data.cache import CacheDB
 from media_scanner.data.models import ActionType, MatchType
@@ -122,6 +123,8 @@ def dupes(
     if limit > 0:
         all_groups = all_groups[:limit]
 
+    actions = []
+
     if auto:
         actions = auto_resolve(all_groups, config)
         for action in actions:
@@ -150,6 +153,18 @@ def dupes(
             console.print(
                 "Run [cyan]media-scanner actions --list[/cyan] to review, "
                 "or [cyan]media-scanner actions --apply[/cyan] to create the deletion album."
+            )
+
+    # Compute and save metadata transfers
+    if actions:
+        items_by_uuid = {item.uuid: item for g in all_groups for item in g.items}
+        transfers = compute_transfers(actions, items_by_uuid)
+        for transfer in transfers:
+            cache.save_metadata_transfer(transfer)
+        if transfers:
+            console.print(
+                f"  [dim]{len(transfers)} metadata transfer(s) queued "
+                f"(date/GPS from duplicates to keepers).[/dim]"
             )
 
     cache.close()

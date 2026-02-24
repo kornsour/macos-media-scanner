@@ -1,5 +1,6 @@
 """Tests for PhotoKit bridge (Swift CLI wrapper)."""
 
+import json
 from unittest.mock import MagicMock, patch, PropertyMock
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from media_scanner.actions.photokit import (
     _needs_recompile,
     _swift_binary_path,
     create_deletion_album_photokit,
+    update_metadata_photokit,
 )
 
 
@@ -130,3 +132,90 @@ class TestCreateDeletionAlbumPhotokit:
     @patch("media_scanner.actions.photokit._needs_recompile", return_value=True)
     def test_fallback_when_compile_fails(self, mock_recompile, mock_compile):
         assert create_deletion_album_photokit(["uuid-1"], "Album") is False
+
+
+class TestCompileIncludesCoreLocation:
+    @patch("media_scanner.actions.photokit._BINARY_DIR")
+    @patch("media_scanner.actions.photokit.subprocess.run")
+    @patch("media_scanner.actions.photokit.shutil.which", return_value="/usr/bin/swiftc")
+    def test_compile_includes_corelocation_framework(self, mock_which, mock_run, mock_dir):
+        mock_run.return_value = MagicMock(returncode=0)
+        _compile_swift_bridge()
+
+        swiftc_call = mock_run.call_args_list[0]
+        args = swiftc_call[0][0]
+        # Should have both -framework Photos and -framework CoreLocation
+        framework_indices = [i for i, a in enumerate(args) if a == "-framework"]
+        frameworks = [args[i + 1] for i in framework_indices]
+        assert "Photos" in frameworks
+        assert "CoreLocation" in frameworks
+
+
+class TestUpdateMetadataPhotokit:
+    def test_empty_transfers_returns_success(self):
+        result = update_metadata_photokit([])
+        assert result["success"] is True
+        assert result["success_count"] == 0
+        assert result["error_count"] == 0
+
+    @patch("media_scanner.actions.photokit.subprocess.run")
+    @patch("media_scanner.actions.photokit._needs_recompile", return_value=False)
+    def test_sends_json_to_stdin(self, mock_recompile, mock_run):
+        response = {"success_count": 1, "error_count": 0, "errors": []}
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps(response)
+        )
+        transfers = [{"uuid": "test-uuid", "date": "2020-01-01T00:00:00"}]
+
+        update_metadata_photokit(transfers)
+
+        call_kwargs = mock_run.call_args[1]
+        payload = json.loads(call_kwargs["input"])
+        assert payload[0]["uuid"] == "test-uuid"
+        assert payload[0]["date"] == "2020-01-01T00:00:00"
+
+    @patch("media_scanner.actions.photokit.subprocess.run")
+    @patch("media_scanner.actions.photokit._needs_recompile", return_value=False)
+    def test_parses_success_response(self, mock_recompile, mock_run):
+        response = {"success_count": 2, "error_count": 0, "errors": []}
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps(response)
+        )
+        transfers = [
+            {"uuid": "uuid-1", "date": "2020-01-01T00:00:00"},
+            {"uuid": "uuid-2", "latitude": 37.7, "longitude": -122.4},
+        ]
+
+        result = update_metadata_photokit(transfers)
+        assert result["success"] is True
+        assert result["success_count"] == 2
+        assert result["error_count"] == 0
+
+    @patch("media_scanner.actions.photokit._compile_swift_bridge", return_value=False)
+    @patch("media_scanner.actions.photokit._needs_recompile", return_value=True)
+    def test_compile_failure(self, mock_recompile, mock_compile):
+        result = update_metadata_photokit([{"uuid": "test"}])
+        assert result["success"] is False
+        assert result["error_count"] == 1
+        assert "compilation failed" in result["errors"][0]
+
+    @patch("media_scanner.actions.photokit.subprocess.run")
+    @patch("media_scanner.actions.photokit._needs_recompile", return_value=False)
+    def test_handles_partial_failure(self, mock_recompile, mock_run):
+        response = {
+            "success_count": 1,
+            "error_count": 1,
+            "errors": ["uuid-2:Asset not found"],
+        }
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps(response)
+        )
+        transfers = [
+            {"uuid": "uuid-1", "date": "2020-01-01T00:00:00"},
+            {"uuid": "uuid-2", "date": "2020-01-01T00:00:00"},
+        ]
+
+        result = update_metadata_photokit(transfers)
+        assert result["success"] is False
+        assert result["success_count"] == 1
+        assert result["error_count"] == 1
