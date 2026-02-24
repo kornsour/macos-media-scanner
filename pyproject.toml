@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-scanner"
+version = "0.1.0"
+description = "CLI tool to find duplicates and analyze your macOS Photos library"
+requires-python = ">=3.11"
+dependencies = [
+    "osxphotos>=0.68.0",
+    "Pillow>=10.0",
+    "ImageHash>=4.3",
+    "typer[all]>=0.9",
+    "rich>=13.0",
+]
+
+[project.scripts]
+media-scanner = "media_scanner.cli.app:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
