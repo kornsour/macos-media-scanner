@@ -7,6 +7,7 @@ from typing import Annotated
 import typer
 
 from media_scanner.cli.app import get_config
+from media_scanner.core.auto_resolver import auto_resolve
 from media_scanner.core.duplicate_finder import (
     find_exact_duplicates,
     find_near_duplicates,
@@ -14,7 +15,7 @@ from media_scanner.core.duplicate_finder import (
 )
 from media_scanner.core.quality_scorer import rank_group
 from media_scanner.data.cache import CacheDB
-from media_scanner.data.models import MatchType
+from media_scanner.data.models import ActionType, MatchType
 from media_scanner.ui.console import console
 from media_scanner.ui.progress import create_progress
 from media_scanner.ui.reviewer import ReviewSession
@@ -32,6 +33,10 @@ def dupes(
     videos: Annotated[
         bool,
         typer.Option("--videos", help="Include video duplicate detection."),
+    ] = False,
+    auto: Annotated[
+        bool,
+        typer.Option("--auto", help="Auto-accept all quality-scorer recommendations."),
     ] = False,
     review: Annotated[
         bool,
@@ -117,7 +122,20 @@ def dupes(
     if limit > 0:
         all_groups = all_groups[:limit]
 
-    if review:
+    if auto:
+        actions = auto_resolve(all_groups, config)
+        for action in actions:
+            cache.save_action(action)
+
+        deletes = sum(1 for a in actions if a.action == ActionType.DELETE)
+        keeps = sum(1 for a in actions if a.action == ActionType.KEEP)
+        console.print(f"\n[bold]Auto-resolved: {keeps} keep, {deletes} delete.[/bold]")
+        if deletes:
+            console.print(
+                "Run [cyan]media-scanner actions --list[/cyan] to review, "
+                "or [cyan]media-scanner actions --apply[/cyan] to create the deletion album."
+            )
+    elif review:
         session = ReviewSession(all_groups, config)
         actions = session.run()
 
@@ -125,7 +143,6 @@ def dupes(
         for action in actions:
             cache.save_action(action)
 
-        from media_scanner.data.models import ActionType
         deletes = sum(1 for a in actions if a.action == ActionType.DELETE)
         keeps = sum(1 for a in actions if a.action == ActionType.KEEP)
         console.print(f"\n[bold]Decisions: {keeps} keep, {deletes} delete.[/bold]")

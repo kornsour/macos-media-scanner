@@ -34,8 +34,8 @@ class ReviewSession:
 
         console.print(
             f"\n[bold]Starting review of {len(self.groups)} duplicate groups.[/bold]\n"
-            "Commands: [a]ccept recommendation, [c]hoose keeper, "
-            "[k]eep all, [s]kip, [u]ndo, [q]uit\n"
+            "Commands: \\[a]ccept recommendation, \\[c]hoose keeper, "
+            "\\[k]eep all, \\[s]kip, \\[u]ndo, \\[q]uit\n"
         )
 
         while 0 <= self.current_index < len(self.groups):
@@ -92,7 +92,7 @@ class ReviewSession:
         while True:
             try:
                 choice = console.input(
-                    "\n  [bold][a]ccept [c]hoose [k]eep all [s]kip [u]ndo [q]uit:[/bold] "
+                    "\n  [bold]\\[a]ccept \\[c]hoose \\[k]eep all \\[s]kip \\[u]ndo \\[q]uit:[/bold] "
                 ).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 return "quit"

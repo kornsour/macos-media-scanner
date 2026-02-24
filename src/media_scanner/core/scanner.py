@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +13,8 @@ from media_scanner.data.models import MediaItem, MediaType
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+logger = logging.getLogger(__name__)
 
 
 def _classify_media_type(photo: osxphotos.PhotoInfo) -> MediaType:
@@ -62,6 +65,29 @@ def _get_score(photo: osxphotos.PhotoInfo) -> float | None:
     return None
 
 
+def _get_duration(photo: osxphotos.PhotoInfo) -> float | None:
+    try:
+        return photo.duration if photo.ismovie else None
+    except Exception:
+        return None
+
+
+def _get_burst_uuid(photo: osxphotos.PhotoInfo) -> str | None:
+    try:
+        if photo.burst and photo.burst_photos:
+            return photo.burst_photos[0].uuid
+    except Exception:
+        pass
+    return None
+
+
+def _get_bool(photo: osxphotos.PhotoInfo, attr: str) -> bool:
+    try:
+        return bool(getattr(photo, attr, False))
+    except Exception:
+        return False
+
+
 def photo_to_media_item(photo: osxphotos.PhotoInfo) -> MediaItem:
     """Convert an osxphotos PhotoInfo to our MediaItem model."""
     location = photo.location if photo.location else (None, None)
@@ -78,7 +104,7 @@ def photo_to_media_item(photo: osxphotos.PhotoInfo) -> MediaItem:
         height=photo.height or 0,
         date_created=photo.date if photo.date else None,
         date_modified=photo.date_modified if photo.date_modified else None,
-        duration=photo.duration if photo.ismovie else None,
+        duration=_get_duration(photo),
         uti=photo.uti or "",
         has_gps=has_gps,
         latitude=location[0],
@@ -86,13 +112,13 @@ def photo_to_media_item(photo: osxphotos.PhotoInfo) -> MediaItem:
         albums=_get_albums(photo),
         persons=_get_persons(photo),
         keywords=_get_keywords(photo),
-        is_edited=bool(photo.hasadjustments),
-        is_favorite=bool(photo.favorite),
-        is_hidden=bool(photo.hidden),
-        is_screenshot=bool(photo.screenshot),
-        is_selfie=bool(photo.selfie),
-        is_burst=bool(photo.burst),
-        burst_uuid=photo.burst_photos[0].uuid if photo.burst and photo.burst_photos else None,
+        is_edited=_get_bool(photo, "hasadjustments"),
+        is_favorite=_get_bool(photo, "favorite"),
+        is_hidden=_get_bool(photo, "hidden"),
+        is_screenshot=_get_bool(photo, "screenshot"),
+        is_selfie=_get_bool(photo, "selfie"),
+        is_burst=_get_bool(photo, "burst"),
+        burst_uuid=_get_burst_uuid(photo),
         live_photo_uuid=None,
         apple_score=_get_score(photo),
     )
@@ -107,12 +133,12 @@ def scan_library(
     else:
         photosdb = osxphotos.PhotosDB()
 
-    for photo in photosdb.photos():
+    for photo in photosdb.photos(movies=True):
         try:
             yield photo_to_media_item(photo)
-        except Exception:
-            # Skip items that can't be converted
-            continue
+        except Exception as exc:
+            name = getattr(photo, "filename", "unknown")
+            logger.warning("Skipped %s: %s", name, exc)
 
 
 def get_library_info(library_path: Path | None = None) -> dict:
@@ -124,5 +150,5 @@ def get_library_info(library_path: Path | None = None) -> dict:
     return {
         "db_path": photosdb.db_path,
         "db_version": photosdb.db_version,
-        "photo_count": len(photosdb.photos()),
+        "photo_count": len(photosdb.photos(movies=True)),
     }

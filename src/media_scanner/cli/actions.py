@@ -90,8 +90,13 @@ def actions(
 
         uuids = [a.uuid for a in deletes]
 
-        from media_scanner.actions.applescript import create_deletion_album
-        success = create_deletion_album(uuids)
+        from media_scanner.actions.photokit import create_deletion_album_photokit
+        from media_scanner.actions.applescript import ALBUM_NAME
+        success = create_deletion_album_photokit(uuids, ALBUM_NAME)
+        if not success:
+            console.print("[yellow]PhotoKit unavailable, falling back to AppleScript...[/yellow]")
+            from media_scanner.actions.applescript import create_deletion_album
+            success = create_deletion_album(uuids)
 
         if success:
             cache.mark_actions_applied(uuids)

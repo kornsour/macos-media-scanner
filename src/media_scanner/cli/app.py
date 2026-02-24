@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -44,6 +45,10 @@ def main(
     if library:
         _config.photos_library = library
     _config.verbose = verbose
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(levelname)s: %(message)s",
+    )
     _config.ensure_dirs()
 
 

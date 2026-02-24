@@ -9,9 +9,11 @@ Built on [osxphotos](https://github.com/RhetTbull/osxphotos) (read-only access t
 - macOS with Photos.app
 - Python 3.11+
 - ffmpeg (for video duplicate detection)
+- Xcode Command Line Tools (optional — enables fast PhotoKit album creation)
 
 ```bash
 brew install ffmpeg
+xcode-select --install   # optional, for PhotoKit support
 ```
 
 ## Installation
@@ -55,6 +57,13 @@ media-scanner dupes --exact
 media-scanner actions --apply
 ```
 
+Or skip interactive review and let the quality scorer decide automatically:
+
+```bash
+media-scanner dupes --exact --auto
+media-scanner actions --apply
+```
+
 ## Commands
 
 ### `scan`
@@ -75,6 +84,7 @@ media-scanner dupes --exact          # SHA-256 exact matches only
 media-scanner dupes --near           # Perceptual hashing (dHash + pHash)
 media-scanner dupes --exact --near   # Both
 media-scanner dupes --videos         # Include video duplicates
+media-scanner dupes --auto           # Auto-accept all quality-scorer recommendations
 media-scanner dupes --no-review      # Find dupes without interactive review
 media-scanner dupes --limit 50       # Review only the first 50 groups
 ```
@@ -126,6 +136,7 @@ Find visually similar photos that aren't duplicates — same scene from a differ
 
 ```bash
 media-scanner similar
+media-scanner similar --auto           # Auto-accept recommendations
 media-scanner similar --no-review --limit 100
 ```
 
@@ -179,6 +190,8 @@ media-scanner actions --clear   # Discard all pending decisions
 media-scanner actions --export ~/Desktop/keepers  # Copy keepers to a folder
 ```
 
+`--apply` uses PhotoKit (via a compiled Swift bridge) for fast, indexed UUID lookups. The Swift binary is compiled on first use and cached at `~/.media-scanner/bin/`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically.
+
 ## How It Works
 
 ### Architecture
@@ -189,9 +202,18 @@ Photos.app ──osxphotos──▶ scanner.py ──▶ SQLite cache ──▶ 
                          (only module                    (all read from
                          that touches                     cached data)
                          Photos library)
+                                                              │
+                                                              ▼
+                                                     actions --apply
+                                                              │
+                                               PhotoKit (Swift CLI) ──▶ Photos album
+                                                   │ fallback
+                                               AppleScript ──▶ Photos album
 ```
 
 Only `core/scanner.py` imports osxphotos. Everything else works with the `MediaItem` dataclass and the SQLite cache, so analysis commands are fast regardless of library size.
+
+Album creation uses a compiled Swift CLI that talks to PhotoKit directly — `fetchAssets(withLocalIdentifiers:)` does indexed O(k) lookups instead of AppleScript's O(n\*m) iteration over every item in the library. For a 200K-item library with 5K deletions, this is orders of magnitude faster.
 
 ### Quality Scoring
 
@@ -212,6 +234,7 @@ When duplicates are found, each item is scored to recommend which to keep:
 - **Read-only** — osxphotos never modifies your Photos library
 - **Two-phase actions** — decisions are stored in SQLite, then applied separately
 - **Album-based deletion** — items are added to a Photos album for you to review and delete manually
+- **Automatic fallback** — PhotoKit is preferred for speed, but falls back to AppleScript if Xcode tools aren't available
 - **Undo** — you can undo during review and `--clear` pending actions at any time
 
 ## Global Options
@@ -226,9 +249,10 @@ media-scanner -v stats                       # Verbose output
 
 ```
 src/media_scanner/
-├── cli/           # Typer commands (scan, dupes, stats, etc.)
-├── core/          # Analysis logic (scanner, hasher, duplicate finder, etc.)
+├── cli/           # Typer commands (scan, dupes, stats, similar, etc.)
+├── core/          # Analysis logic (scanner, hasher, duplicate finder, auto resolver)
 ├── data/          # Data models, SQLite cache, migrations
 ├── ui/            # Rich console, progress bars, interactive reviewer
-└── actions/       # AppleScript bridge, action log, file exporter
+└── actions/       # PhotoKit bridge, AppleScript fallback, action log, file exporter
+    └── swift/     # Swift source for PhotoKit CLI (compiled on first use)
 ```
