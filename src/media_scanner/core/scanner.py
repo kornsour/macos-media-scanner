@@ -66,10 +66,15 @@ def _get_score(photo: osxphotos.PhotoInfo) -> float | None:
 
 
 def _get_duration(photo: osxphotos.PhotoInfo) -> float | None:
-    try:
-        return photo.duration if photo.ismovie else None
-    except Exception:
+    if not photo.ismovie:
         return None
+    try:
+        exif = photo.exif_info
+        if exif and exif.duration:
+            return exif.duration
+    except Exception:
+        pass
+    return None
 
 
 def _get_burst_uuid(photo: osxphotos.PhotoInfo) -> str | None:

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 
 from media_scanner.core.hasher import dhash_image, sha256_file
+
+logger = logging.getLogger(__name__)
 
 
 def extract_keyframes(video_path: Path, max_frames: int = 8) -> list[Path]:
@@ -18,7 +21,7 @@ def extract_keyframes(video_path: Path, max_frames: int = 8) -> list[Path]:
     output_pattern = str(Path(tmp_dir) / "frame_%04d.jpg")
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "ffmpeg",
                 "-i", str(video_path),
@@ -31,10 +34,21 @@ def extract_keyframes(video_path: Path, max_frames: int = 8) -> list[Path]:
             capture_output=True,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        if result.returncode != 0:
+            logger.debug(
+                "ffmpeg failed (exit %d) for %s: %s",
+                result.returncode, video_path.name,
+                result.stderr[:200] if result.stderr else "",
+            )
+    except subprocess.TimeoutExpired:
+        logger.debug("ffmpeg timed out for %s", video_path.name)
+        return []
+    except FileNotFoundError:
+        logger.debug("ffmpeg not found")
         return []
 
     frames = sorted(Path(tmp_dir).glob("frame_*.jpg"))
+    logger.debug("Extracted %d keyframe(s) from %s", len(frames), video_path.name)
     return frames
 
 

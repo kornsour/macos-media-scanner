@@ -33,7 +33,7 @@ def dupes(
     ] = False,
     videos: Annotated[
         bool,
-        typer.Option("--videos", help="Include video duplicate detection."),
+        typer.Option("--videos", help="Include videos in duplicate detection."),
     ] = False,
     auto: Annotated[
         bool,
@@ -89,14 +89,29 @@ def dupes(
         all_groups.extend(groups)
 
     if videos:
-        console.print("[bold]Finding video duplicates...[/bold]")
+        if near:
+            console.print("[bold]Finding video duplicates (exact + near)...[/bold]")
+
+            import shutil
+            if not shutil.which("ffmpeg"):
+                console.print(
+                    "  [dim]ffmpeg not found — video near-duplicate detection disabled. "
+                    "Install ffmpeg for keyframe-based matching.[/dim]"
+                )
+        else:
+            console.print("[bold]Finding exact video duplicates (duration + SHA-256)...[/bold]")
+
         with create_progress() as progress:
             task = progress.add_task("Processing videos", total=100)
 
             def video_progress(done: int, total: int) -> None:
                 progress.update(task, completed=done, total=total)
 
-            groups = find_video_duplicates(cache, config, progress_callback=video_progress)
+            groups = find_video_duplicates(
+                cache, config,
+                progress_callback=video_progress,
+                include_near=near,
+            )
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] video duplicate groups.")
         all_groups.extend(groups)

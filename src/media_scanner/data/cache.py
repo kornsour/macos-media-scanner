@@ -228,6 +228,32 @@ class CacheDB:
         row = self.conn.execute("SELECT COUNT(*) as cnt FROM media_items").fetchone()
         return row["cnt"]
 
+    def remove_items_not_in(self, valid_uuids: set[str]) -> int:
+        """Delete cached items whose UUIDs are no longer in the Photos library.
+
+        Returns the number of rows removed.
+        """
+        all_rows = self.conn.execute("SELECT uuid FROM media_items").fetchall()
+        stale = [r["uuid"] for r in all_rows if r["uuid"] not in valid_uuids]
+        if not stale:
+            return 0
+        batch_size = 500
+        for i in range(0, len(stale), batch_size):
+            batch = stale[i : i + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            self.conn.execute(
+                f"DELETE FROM media_items WHERE uuid IN ({placeholders})", batch
+            )
+            self.conn.execute(
+                f"DELETE FROM actions WHERE uuid IN ({placeholders})", batch
+            )
+            self.conn.execute(
+                f"DELETE FROM duplicate_group_members WHERE uuid IN ({placeholders})",
+                batch,
+            )
+        self.conn.commit()
+        return len(stale)
+
     # ── Duplicate Groups ─────────────────────────────────────
 
     def clear_duplicate_groups(self) -> None:

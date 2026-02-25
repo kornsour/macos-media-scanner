@@ -19,6 +19,14 @@ def big_files(
         int,
         typer.Option("--limit", "-n", help="Number of files to show."),
     ] = 50,
+    album: Annotated[
+        bool,
+        typer.Option("--album", help="Create a Photos album with the results."),
+    ] = False,
+    album_name: Annotated[
+        str,
+        typer.Option("--album-name", help="Custom album name (default: 'Media Scanner - Big Files')."),
+    ] = "Media Scanner - Big Files",
 ) -> None:
     """Show the largest files in your library."""
     config = get_config()
@@ -41,5 +49,32 @@ def big_files(
         f"(total: {format_size(total_size)}):[/bold]\n"
     )
     console.print(media_item_table(items, title=f"Biggest Files (top {limit})"))
+
+    if album:
+        uuids = [i.uuid for i in items]
+
+        from media_scanner.actions.photokit import create_deletion_album_photokit
+
+        console.print(
+            f"\n[bold]Creating '{album_name}' album with "
+            f"{format_count(len(uuids))} items...[/bold]"
+        )
+        result = create_deletion_album_photokit(uuids, album_name)
+        if result["success"]:
+            console.print(
+                f"[green]Album '{album_name}' created! "
+                f"Open Photos.app to find it.[/green]"
+            )
+        else:
+            if result["error"] == "auth_denied":
+                console.print(
+                    "[yellow]PhotoKit access denied. Grant Photos access:[/yellow]\n"
+                    "  [bold]System Settings → Privacy & Security → Photos → "
+                    "toggle PhotosBridge ON[/bold]"
+                )
+            else:
+                console.print(
+                    f"[red]Failed to create album: {result['error']}[/red]"
+                )
 
     cache.close()

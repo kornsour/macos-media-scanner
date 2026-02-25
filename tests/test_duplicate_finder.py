@@ -10,6 +10,7 @@ from media_scanner.core.duplicate_finder import (
     _confirm_with_phash,
     find_exact_duplicates,
     find_near_duplicates,
+    find_video_duplicates,
 )
 from media_scanner.data.cache import CacheDB
 from media_scanner.data.models import MatchType, MediaType
@@ -181,3 +182,120 @@ class TestConfirmWithPhash:
         ]
         confirmed = _confirm_with_phash(items, MagicMock(), config)
         assert len(confirmed) == 2
+
+
+class TestFindVideoDuplicates:
+    def test_cloud_only_same_size_groups(self, cache: CacheDB):
+        """Cloud-only videos with same duration + file_size => exact group."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.0,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        config = Config()
+        groups = find_video_duplicates(cache, config)
+        assert len(groups) == 1
+        assert groups[0].match_type == MatchType.EXACT
+        uuids = {i.uuid for i in groups[0].items}
+        assert uuids == {"v1", "v2"}
+
+    def test_cloud_only_different_size_no_group(self, cache: CacheDB):
+        """Cloud-only videos with same duration but different file_size => no group."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.0,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO, path=None,
+                file_size=60_000_000, duration=30.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        config = Config()
+        groups = find_video_duplicates(cache, config)
+        assert len(groups) == 0
+
+    @patch("media_scanner.core.duplicate_finder.sha256_video")
+    def test_mixed_cloud_and_local_merge(self, mock_sha, cache: CacheDB):
+        """Cloud-only video merges into SHA group when file_size matches."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"), file_size=50_000_000, duration=30.0,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_sha.return_value = "videohash"
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_video_duplicates(cache, config)
+        assert len(groups) == 1
+        uuids = {i.uuid for i in groups[0].items}
+        assert uuids == {"v1", "v2"}
+
+    @patch("media_scanner.core.duplicate_finder.sha256_video")
+    def test_local_videos_exact_match(self, mock_sha, cache: CacheDB):
+        """Local videos with same SHA-256 => exact group (existing behavior)."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"), file_size=50_000_000, duration=30.0,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO,
+                path=Path("/tmp/v2.mov"), file_size=50_000_000, duration=30.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_sha.return_value = "samehash"
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_video_duplicates(cache, config)
+        assert len(groups) == 1
+        assert groups[0].match_type == MatchType.EXACT
+
+    def test_no_duration_no_group(self, cache: CacheDB):
+        """Videos without duration are excluded from duration grouping."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=None,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=None,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        config = Config()
+        groups = find_video_duplicates(cache, config)
+        assert len(groups) == 0
+
+    def test_progress_callback_called(self, cache: CacheDB):
+        """Progress callback fires for cloud-only videos."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.0,
+            ),
+            sample_item(
+                uuid="v2", media_type=MediaType.VIDEO, path=None,
+                file_size=50_000_000, duration=30.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        callback = MagicMock()
+        config = Config()
+        find_video_duplicates(cache, config, progress_callback=callback)
+        assert callback.call_count >= 1

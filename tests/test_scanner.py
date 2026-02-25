@@ -50,7 +50,9 @@ class TestPhotoToMediaItem:
         photo.height = overrides.get("height", 3024)
         photo.date = overrides.get("date", datetime(2024, 6, 15))
         photo.date_modified = overrides.get("date_modified", None)
-        photo.duration = overrides.get("duration", 0)
+        exif_mock = MagicMock()
+        exif_mock.duration = overrides.get("duration", 0)
+        photo.exif_info = exif_mock
         photo.uti = overrides.get("uti", "public.heic")
         photo.location = overrides.get("location", (37.77, -122.42))
         photo.albums = overrides.get("albums", ["Vacation"])

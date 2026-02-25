@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,17 @@ if TYPE_CHECKING:
 
     from media_scanner.config import Config
     from media_scanner.data.cache import CacheDB
+
+logger = logging.getLogger(__name__)
+
+
+def _fmt_size(n: int) -> str:
+    """Format bytes as human-readable size for log messages."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 
 def find_exact_duplicates(
@@ -165,8 +177,14 @@ def find_video_duplicates(
     cache: CacheDB,
     config: Config,
     progress_callback: Callable[[int, int], None] | None = None,
+    include_near: bool = False,
 ) -> list[DuplicateGroup]:
-    """Find duplicate videos: group by duration, then SHA-256, then keyframe hashing."""
+    """Find duplicate videos: group by duration, then SHA-256/file-size, then keyframe hashing.
+
+    When *include_near* is False (default), only exact matches (SHA-256 /
+    file-size) are returned.  Set to True to also run ffmpeg keyframe
+    dHash comparison on remaining unmatched items.
+    """
     exact_groups: list[DuplicateGroup] = []
     near_groups: list[DuplicateGroup] = []
 
@@ -176,14 +194,31 @@ def find_video_duplicates(
 
     total = sum(len(g) for g in duration_groups)
     processed = 0
+    logger.debug(
+        "Video duplicates: %d duration groups, %d total items",
+        len(duration_groups), total,
+    )
 
-    for group_items in duration_groups:
-        # Stage 2: SHA-256 for exact matches
+    for group_idx, group_items in enumerate(duration_groups):
+        # Stage 2a: SHA-256 for items with local paths
         sha_map: dict[str, list[MediaItem]] = defaultdict(list)
+        size_map: dict[int, list[MediaItem]] = defaultdict(list)
         unmatched: list[MediaItem] = []
+
+        logger.debug(
+            "Duration group %d/%d: %d items (duration ~%.1fs)",
+            group_idx + 1, len(duration_groups),
+            len(group_items), group_items[0].duration or 0,
+        )
 
         for item in group_items:
             if not item.path or not item.path.exists():
+                # No local file — collect for file_size matching
+                if item.file_size > 0:
+                    size_map[item.file_size].append(item)
+                logger.debug(
+                    "  [no path] %s (%s)", item.filename, _fmt_size(item.file_size),
+                )
                 processed += 1
                 if progress_callback:
                     progress_callback(processed, total)
@@ -191,7 +226,13 @@ def find_video_duplicates(
 
             if item.sha256:
                 sha = item.sha256
+                logger.debug(
+                    "  [cached]  %s (%s)", item.filename, _fmt_size(item.file_size),
+                )
             else:
+                logger.debug(
+                    "  [hashing] %s (%s)...", item.filename, _fmt_size(item.file_size),
+                )
                 sha = sha256_video(item.path)
                 if sha:
                     cache.update_hash(item.uuid, "sha256", sha)
@@ -204,6 +245,25 @@ def find_video_duplicates(
             processed += 1
             if progress_callback:
                 progress_callback(processed, total)
+
+        # Stage 2b: Merge cloud-only items into SHA groups by file_size
+        for size, cloud_items in size_map.items():
+            matching_shas = [
+                sha for sha, sha_items in sha_map.items()
+                if sha_items[0].file_size == size
+            ]
+            if len(matching_shas) == 1:
+                # Unambiguous match — same duration, same size, same SHA
+                sha_map[matching_shas[0]].extend(cloud_items)
+            elif not matching_shas and len(cloud_items) >= 2:
+                # All cloud-only but same duration + file_size
+                exact_groups.append(
+                    DuplicateGroup(
+                        group_id=0,
+                        match_type=MatchType.EXACT,
+                        items=cloud_items,
+                    )
+                )
 
         for sha, items in sha_map.items():
             if len(items) >= 2:
@@ -218,13 +278,22 @@ def find_video_duplicates(
                 unmatched.extend(items)
 
         # Stage 3: Keyframe dHash for near matches
-        if len(unmatched) >= 2:
+        if include_near and len(unmatched) >= 2:
+            logger.debug(
+                "  Near-duplicate stage: %d unmatched items", len(unmatched),
+            )
             frame_hashes: dict[str, list[str]] = {}
             for item in unmatched:
                 if item.path and item.path.exists():
+                    logger.debug(
+                        "  [keyframes] %s (%s)...",
+                        item.filename, _fmt_size(item.file_size),
+                    )
                     fh = dhash_video(item.path)
                     if fh:
                         frame_hashes[item.uuid] = fh
+                    else:
+                        logger.debug("    No keyframes extracted")
 
             visited: set[str] = set()
             for i, item_a in enumerate(unmatched):
