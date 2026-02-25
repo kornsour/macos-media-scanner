@@ -50,8 +50,16 @@ def phash_image(path: Path, hash_size: int = 16) -> str | None:
         return None
 
 
+def hash_hex_to_int(hex_str: str) -> int:
+    """Convert a hex hash string (possibly with spaces) to an integer."""
+    return int(hex_str.replace(" ", ""), 16)
+
+
+def hamming_distance_int(a: int, b: int) -> int:
+    """Fast Hamming distance between two integer hashes using bit ops."""
+    return bin(a ^ b).count("1")
+
+
 def hamming_distance(hash1: str, hash2: str) -> int:
     """Compute the Hamming distance between two hex hash strings."""
-    h1 = imagehash.hex_to_hash(hash1)
-    h2 = imagehash.hex_to_hash(hash2)
-    return h1 - h2
+    return hamming_distance_int(hash_hex_to_int(hash1), hash_hex_to_int(hash2))

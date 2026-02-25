@@ -78,12 +78,22 @@ def dupes(
     if near:
         console.print("[bold]Finding near-duplicates (perceptual hashing)...[/bold]")
         with create_progress() as progress:
-            task = progress.add_task("Hashing", total=100)
+            hash_task = progress.add_task("Hashing", total=100)
+            compare_task = progress.add_task("Comparing", total=100, visible=False)
 
             def near_progress(done: int, total: int) -> None:
-                progress.update(task, completed=done, total=total)
+                progress.update(hash_task, completed=done, total=total)
 
-            groups = find_near_duplicates(cache, config, progress_callback=near_progress)
+            def compare_progress(done: int, total: int) -> None:
+                if not progress.tasks[compare_task].visible:
+                    progress.update(compare_task, visible=True, total=total)
+                progress.update(compare_task, completed=done, total=total)
+
+            groups = find_near_duplicates(
+                cache, config,
+                progress_callback=near_progress,
+                compare_progress_callback=compare_progress,
+            )
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] near-duplicate groups.")
         all_groups.extend(groups)

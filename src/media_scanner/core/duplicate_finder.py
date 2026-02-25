@@ -6,7 +6,14 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from media_scanner.core.hasher import dhash_image, hamming_distance, phash_image, sha256_file
+from media_scanner.core.hasher import (
+    dhash_image,
+    hamming_distance,
+    hamming_distance_int,
+    hash_hex_to_int,
+    phash_image,
+    sha256_file,
+)
 from media_scanner.core.video_hasher import dhash_video, sha256_video, video_frames_similar
 from media_scanner.data.models import DuplicateGroup, MatchType, MediaItem, MediaType
 
@@ -85,6 +92,7 @@ def find_near_duplicates(
     cache: CacheDB,
     config: Config,
     progress_callback: Callable[[int, int], None] | None = None,
+    compare_progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[DuplicateGroup]:
     """Stage 3+4: dHash grouping with pHash confirmation for photos.
 
@@ -110,20 +118,27 @@ def find_near_duplicates(
         if progress_callback:
             progress_callback(idx + 1, total)
 
-    # Group by similar dHash (quadratic, but with early termination)
+    # Group by similar dHash — pre-convert to ints for fast comparison
     hashed_photos = [p for p in photos if p.dhash]
+    hash_ints = [hash_hex_to_int(p.dhash) for p in hashed_photos]
+    n = len(hashed_photos)
+    threshold = config.dhash_threshold
+
     visited: set[str] = set()
     groups: list[DuplicateGroup] = []
 
     for i, item_a in enumerate(hashed_photos):
+        if compare_progress_callback:
+            compare_progress_callback(i + 1, n)
         if item_a.uuid in visited:
             continue
         cluster = [item_a]
-        for item_b in hashed_photos[i + 1:]:
+        ha = hash_ints[i]
+        for j in range(i + 1, n):
+            item_b = hashed_photos[j]
             if item_b.uuid in visited:
                 continue
-            dist = hamming_distance(item_a.dhash, item_b.dhash)
-            if dist <= config.dhash_threshold:
+            if hamming_distance_int(ha, hash_ints[j]) <= threshold:
                 cluster.append(item_b)
                 visited.add(item_b.uuid)
         if len(cluster) >= 2:

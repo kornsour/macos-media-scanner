@@ -97,7 +97,7 @@ class TestFindExactDuplicates:
 class TestFindNearDuplicates:
     @patch("media_scanner.core.duplicate_finder._confirm_with_phash")
     @patch("media_scanner.core.duplicate_finder.dhash_image")
-    @patch("media_scanner.core.duplicate_finder.hamming_distance")
+    @patch("media_scanner.core.duplicate_finder.hamming_distance_int")
     def test_groups_similar_dhashes(self, mock_hamming, mock_dhash, mock_confirm, cache: CacheDB):
         """Items with dhash distance <= threshold => near group."""
         items = [
@@ -117,7 +117,7 @@ class TestFindNearDuplicates:
         assert groups[0].match_type == MatchType.NEAR
 
     @patch("media_scanner.core.duplicate_finder.dhash_image")
-    @patch("media_scanner.core.duplicate_finder.hamming_distance")
+    @patch("media_scanner.core.duplicate_finder.hamming_distance_int")
     def test_excludes_distant_dhashes(self, mock_hamming, mock_dhash, cache: CacheDB):
         """Items with dhash distance > threshold => no group."""
         items = [
