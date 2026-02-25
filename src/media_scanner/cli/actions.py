@@ -167,9 +167,21 @@ def actions(
 
         from media_scanner.actions.photokit import create_deletion_album_photokit
         from media_scanner.actions.applescript import ALBUM_NAME
-        success = create_deletion_album_photokit(uuids, ALBUM_NAME)
+        pk_result = create_deletion_album_photokit(uuids, ALBUM_NAME)
+        success = pk_result["success"]
         if not success:
-            console.print("[yellow]PhotoKit unavailable, falling back to AppleScript...[/yellow]")
+            if pk_result["error"] == "auth_denied":
+                console.print(
+                    "[yellow]PhotoKit access denied. Grant Photos access:[/yellow]\n"
+                    "  [bold]System Settings → Privacy & Security → Photos → "
+                    "toggle PhotosBridge ON[/bold]\n"
+                    "[yellow]Falling back to AppleScript (slower)...[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[yellow]PhotoKit unavailable ({pk_result['error']}), "
+                    f"falling back to AppleScript...[/yellow]"
+                )
             from media_scanner.actions.applescript import create_deletion_album
             success = create_deletion_album(uuids)
 

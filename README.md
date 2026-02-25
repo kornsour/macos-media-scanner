@@ -6,14 +6,14 @@ Built on [osxphotos](https://github.com/RhetTbull/osxphotos) (read-only access t
 
 ## Prerequisites
 
-- macOS with Photos.app
+- macOS 14+ with Photos.app
 - Python 3.11+
 - ffmpeg (for video duplicate detection)
-- Xcode Command Line Tools (optional — enables fast PhotoKit album creation)
+- Xcode Command Line Tools (required for PhotoKit album creation — highly recommended)
 
 ```bash
 brew install ffmpeg
-xcode-select --install   # optional, for PhotoKit support
+xcode-select --install
 ```
 
 ## Installation
@@ -23,6 +23,14 @@ git clone https://github.com/kornsour/macos-media-scanner.git
 cd media-scanner
 pip3 install -e .
 ```
+
+### PhotoKit setup (first run)
+
+The first time you run `media-scanner actions --apply`, the tool compiles a Swift helper app and macOS will show a **Photos access permission prompt**. Click **Allow** to grant access.
+
+If you missed the prompt or denied it, go to **System Settings → Privacy & Security → Photos** and toggle **PhotosBridge** on.
+
+> **Why a .app bundle?** macOS 14+ silently denies Photos access to plain CLI tools. The Swift helper is packaged as a minimal `.app` at `~/.media-scanner/PhotosBridge.app` so macOS will show the permission dialog. If Xcode Command Line Tools aren't installed, album creation falls back to AppleScript automatically (slower but works without any setup).
 
 After installing, the `media-scanner` command is placed in Python's scripts directory which may not be on your PATH. You can either:
 
@@ -190,7 +198,7 @@ media-scanner actions --clear   # Discard all pending decisions
 media-scanner actions --export ~/Desktop/keepers  # Copy keepers to a folder
 ```
 
-`--apply` uses PhotoKit (via a compiled Swift bridge) for fast, indexed UUID lookups. The Swift binary is compiled on first use and cached at `~/.media-scanner/bin/`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically.
+`--apply` uses PhotoKit (via a compiled Swift .app bundle) for fast, indexed UUID lookups. The app is compiled on first use and cached at `~/.media-scanner/PhotosBridge.app`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically.
 
 ## How It Works
 
@@ -213,7 +221,7 @@ Photos.app ──osxphotos──▶ scanner.py ──▶ SQLite cache ──▶ 
 
 Only `core/scanner.py` imports osxphotos. Everything else works with the `MediaItem` dataclass and the SQLite cache, so analysis commands are fast regardless of library size.
 
-Album creation uses a compiled Swift CLI that talks to PhotoKit directly — `fetchAssets(withLocalIdentifiers:)` does indexed O(k) lookups instead of AppleScript's O(n\*m) iteration over every item in the library. For a 200K-item library with 5K deletions, this is orders of magnitude faster.
+Album creation uses a compiled Swift app (`.app` bundle) that talks to PhotoKit directly — `fetchAssets(withLocalIdentifiers:)` does indexed O(k) lookups instead of AppleScript's O(n\*m) iteration over every item in the library. For a 200K-item library with 5K deletions, this is orders of magnitude faster. The `.app` bundle is required because macOS 14+ silently denies Photos access to plain CLI tools.
 
 ### Quality Scoring
 
@@ -234,7 +242,7 @@ When duplicates are found, each item is scored to recommend which to keep:
 - **Read-only** — osxphotos never modifies your Photos library
 - **Two-phase actions** — decisions are stored in SQLite, then applied separately
 - **Album-based deletion** — items are added to a Photos album for you to review and delete manually
-- **Automatic fallback** — PhotoKit is preferred for speed, but falls back to AppleScript if Xcode tools aren't available
+- **Automatic fallback** — PhotoKit is preferred for speed, but falls back to AppleScript if Xcode tools aren't available or Photos access is denied
 - **Undo** — you can undo during review and `--clear` pending actions at any time
 
 ## Global Options

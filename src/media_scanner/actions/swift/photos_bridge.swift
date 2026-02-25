@@ -1,21 +1,63 @@
 import Photos
 import Foundation
 import CoreLocation
+import AppKit
 
-/// Minimal CLI: photos-bridge --album "Name" or photos-bridge --update-metadata
-/// --album: reads UUIDs from stdin, adds matching assets to a Photos album.
-/// --update-metadata: reads JSON from stdin, updates creation date and/or GPS on assets.
+/// Minimal CLI packaged as a .app bundle so macOS will display the Photos
+/// permission prompt (plain CLI tools are silently denied on macOS 14+).
+///
+/// photos-bridge --album "Name"            (reads UUIDs from stdin or --stdin-file)
+/// photos-bridge --update-metadata         (reads JSON from stdin or --stdin-file)
+///
+/// File-based I/O flags (used when launched via `open`):
+///   --stdin-file  /path    read input from file instead of stdin
+///   --stdout-file /path    write stdout to file
+///   --stderr-file /path    write stderr to file
 
-func requestAuth() -> PHAuthorizationStatus {
-    let sema = DispatchSemaphore(value: 0)
-    var authStatus: PHAuthorizationStatus = .notDetermined
-    PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-        authStatus = status
-        sema.signal()
+// MARK: - I/O helpers
+
+/// Redirect stdout/stderr to files when --stdout-file / --stderr-file are given.
+/// This is needed because `open` does not capture stdout/stderr.
+func setupFileIO() {
+    let args = CommandLine.arguments
+    if let idx = args.firstIndex(of: "--stdout-file"), idx + 1 < args.count {
+        let path = args[idx + 1]
+        FileManager.default.createFile(atPath: path, contents: nil)
+        if let fh = FileHandle(forWritingAtPath: path) {
+            dup2(fh.fileDescriptor, STDOUT_FILENO)
+        }
     }
-    sema.wait()
-    return authStatus
+    if let idx = args.firstIndex(of: "--stderr-file"), idx + 1 < args.count {
+        let path = args[idx + 1]
+        FileManager.default.createFile(atPath: path, contents: nil)
+        if let fh = FileHandle(forWritingAtPath: path) {
+            dup2(fh.fileDescriptor, STDERR_FILENO)
+        }
+    }
 }
+
+/// Read all input — either from a file (--stdin-file) or from stdin.
+func readAllInput() -> Data {
+    let args = CommandLine.arguments
+    if let idx = args.firstIndex(of: "--stdin-file"), idx + 1 < args.count {
+        let path = args[idx + 1]
+        guard let data = FileManager.default.contents(atPath: path) else {
+            fputs("Cannot read file: \(path)\n", stderr)
+            exit(1)
+        }
+        return data
+    }
+    // Fall back to stdin
+    var data = Data()
+    while let line = readLine(strippingNewline: false) {
+        if let d = line.data(using: .utf8) {
+            data.append(d)
+        }
+    }
+    return data
+}
+
+// MARK: - Shared helpers
 
 func fetchAsset(uuid: String) -> PHAsset? {
     let result = PHAsset.fetchAssets(withLocalIdentifiers: [uuid], options: nil)
@@ -25,27 +67,9 @@ func fetchAsset(uuid: String) -> PHAsset? {
     return nil
 }
 
-// MARK: - Album subcommand
+// MARK: - Album logic
 
-func albumCommand(albumName: String) {
-    var uuids: [String] = []
-    while let line = readLine(strippingNewline: true) {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty {
-            uuids.append(trimmed)
-        }
-    }
-    if uuids.isEmpty {
-        fputs("No UUIDs provided on stdin.\n", stderr)
-        exit(1)
-    }
-
-    let authStatus = requestAuth()
-    guard authStatus == .authorized || authStatus == .limited else {
-        fputs("PhotoKit authorization denied (status=\(authStatus.rawValue)).\n", stderr)
-        exit(2)
-    }
-
+func runAlbumCommand(albumName: String, uuids: [String]) {
     var fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: uuids, options: nil)
     if fetchResult.count == 0 {
         let suffixed = uuids.map { $0 + "/L0/001" }
@@ -97,7 +121,7 @@ func albumCommand(albumName: String) {
     }
 }
 
-// MARK: - Update metadata subcommand
+// MARK: - Update metadata logic
 
 struct MetadataUpdate: Decodable {
     let uuid: String
@@ -112,20 +136,7 @@ struct UpdateResult: Encodable {
     let errors: [String]
 }
 
-func updateMetadataCommand() {
-    // Read JSON from stdin
-    var inputData = Data()
-    while let line = readLine(strippingNewline: false) {
-        if let data = line.data(using: .utf8) {
-            inputData.append(data)
-        }
-    }
-
-    guard !inputData.isEmpty else {
-        fputs("No JSON provided on stdin.\n", stderr)
-        exit(1)
-    }
-
+func runUpdateMetadataCommand(inputData: Data) {
     let updates: [MetadataUpdate]
     do {
         updates = try JSONDecoder().decode([MetadataUpdate].self, from: inputData)
@@ -139,12 +150,6 @@ func updateMetadataCommand() {
         let jsonData = try! JSONEncoder().encode(result)
         print(String(data: jsonData, encoding: .utf8)!)
         return
-    }
-
-    let authStatus = requestAuth()
-    guard authStatus == .authorized || authStatus == .limited else {
-        fputs("PhotoKit authorization denied (status=\(authStatus.rawValue)).\n", stderr)
-        exit(2)
     }
 
     let isoFormatter = ISO8601DateFormatter()
@@ -191,20 +196,82 @@ func updateMetadataCommand() {
     print(String(data: jsonData, encoding: .utf8)!)
 }
 
-// MARK: - Main dispatch
+// MARK: - App delegate (drives the NSApplication run loop)
 
-func main() {
-    let args = CommandLine.arguments
+class BridgeDelegate: NSObject, NSApplicationDelegate {
 
-    if args.contains("--update-metadata") {
-        updateMetadataCommand()
-    } else if let albumIdx = args.firstIndex(of: "--album"), albumIdx + 1 < args.count {
-        let albumName = args[albumIdx + 1]
-        albumCommand(albumName: albumName)
-    } else {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Redirect stdout/stderr to files if requested
+        setupFileIO()
+
+        // Read all input before requesting auth
+        let (mode, inputData) = parseArgs()
+
+        // Request Photos authorization — the NSApplication run loop is active
+        // so macOS can display the permission prompt dialog.
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+            DispatchQueue.main.async {
+                guard status == .authorized || status == .limited else {
+                    fputs("PhotoKit authorization denied (status=\(status.rawValue)).\n", stderr)
+                    exit(2)
+                }
+                self.dispatch(mode: mode, inputData: inputData)
+            }
+        }
+    }
+
+    private func parseArgs() -> (Mode, Data) {
+        let args = CommandLine.arguments
+        let allInput = readAllInput()
+
+        if args.contains("--update-metadata") {
+            guard !allInput.isEmpty else {
+                fputs("No JSON provided on stdin.\n", stderr)
+                exit(1)
+            }
+            return (.updateMetadata, allInput)
+        }
+
+        if let albumIdx = args.firstIndex(of: "--album"), albumIdx + 1 < args.count {
+            let albumName = args[albumIdx + 1]
+            let text = String(data: allInput, encoding: .utf8) ?? ""
+            let uuids = text.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if uuids.isEmpty {
+                fputs("No UUIDs provided.\n", stderr)
+                exit(1)
+            }
+            let payload = try! JSONSerialization.data(
+                withJSONObject: ["albumName": albumName, "uuids": uuids]
+            )
+            return (.album, payload)
+        }
+
         fputs("Usage: photos-bridge --album <name> | --update-metadata\n", stderr)
         exit(1)
     }
+
+    private func dispatch(mode: Mode, inputData: Data) {
+        switch mode {
+        case .album:
+            let obj = try! JSONSerialization.jsonObject(with: inputData) as! [String: Any]
+            let albumName = obj["albumName"] as! String
+            let uuids = obj["uuids"] as! [String]
+            runAlbumCommand(albumName: albumName, uuids: uuids)
+        case .updateMetadata:
+            runUpdateMetadataCommand(inputData: inputData)
+        }
+        exit(0)
+    }
 }
 
-main()
+enum Mode { case album, updateMetadata }
+
+// MARK: - Entry point
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let delegate = BridgeDelegate()
+app.delegate = delegate
+app.run()

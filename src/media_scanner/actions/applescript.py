@@ -3,28 +3,68 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
+from pathlib import Path
 
 
 ALBUM_NAME = "Media Scanner - To Delete"
 
 
-def create_deletion_album(uuids: list[str]) -> bool:
-    """Create (or update) an album in Photos.app containing the items to delete.
+def _run_applescript(script: str, timeout: int = 600) -> bool:
+    """Write an AppleScript to a temp file and execute it.
 
-    Uses AppleScript via osascript. Returns True on success.
+    Using a temp file avoids the OS argument-length limit that occurs when
+    passing large scripts via ``osascript -e``.
     """
-    if not uuids:
-        return True
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".scpt", delete=False
+    ) as f:
+        f.write(script)
+        f.flush()
+        tmp_path = Path(f.name)
 
-    # Build the UUID list for AppleScript
+    try:
+        result = subprocess.run(
+            ["osascript", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _ensure_album_exists() -> bool:
+    """Create the deletion album if it doesn't already exist. Returns True on success."""
+    script = f'''
+    tell application "Photos"
+        set albumName to "{ALBUM_NAME}"
+        set targetAlbum to missing value
+        repeat with a in albums
+            if name of a is albumName then
+                set targetAlbum to a
+                exit repeat
+            end if
+        end repeat
+        if targetAlbum is missing value then
+            make new album named albumName
+        end if
+    end tell
+    '''
+    return _run_applescript(script, timeout=60)
+
+
+def _add_batch_to_album(uuids: list[str]) -> bool:
+    """Add a batch of UUIDs to the existing deletion album."""
     uuid_list = ", ".join(f'"{u}"' for u in uuids)
 
     script = f'''
     tell application "Photos"
-        -- Create or get existing album
         set albumName to "{ALBUM_NAME}"
         set targetAlbum to missing value
-
         repeat with a in albums
             if name of a is albumName then
                 set targetAlbum to a
@@ -33,10 +73,9 @@ def create_deletion_album(uuids: list[str]) -> bool:
         end repeat
 
         if targetAlbum is missing value then
-            set targetAlbum to make new album named albumName
+            return "error: album not found"
         end if
 
-        -- Find media items by UUID and add to album
         set uuidList to {{{uuid_list}}}
         set itemsToAdd to {{}}
 
@@ -53,26 +92,24 @@ def create_deletion_album(uuids: list[str]) -> bool:
         return (count of itemsToAdd) as text
     end tell
     '''
+    return _run_applescript(script, timeout=600)
 
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes for large libraries
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+
+def create_deletion_album(uuids: list[str], batch_size: int = 500) -> bool:
+    """Create (or update) an album in Photos.app containing the items to delete.
+
+    Processes UUIDs in batches via temp-file AppleScript to avoid OS arg limits.
+    Returns True on success.
+    """
+    if not uuids:
+        return True
+
+    if not _ensure_album_exists():
         return False
 
-
-def create_album_batch(uuids: list[str], batch_size: int = 100) -> bool:
-    """Create the deletion album in batches to avoid AppleScript limits.
-
-    For very large libraries, process UUIDs in chunks.
-    """
     for i in range(0, len(uuids), batch_size):
-        batch = uuids[i:i + batch_size]
-        if not create_deletion_album(batch):
+        batch = uuids[i : i + batch_size]
+        if not _add_batch_to_album(batch):
             return False
+
     return True
