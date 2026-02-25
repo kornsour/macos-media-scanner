@@ -70,17 +70,21 @@ func fetchAsset(uuid: String) -> PHAsset? {
 // MARK: - Album logic
 
 func runAlbumCommand(albumName: String, uuids: [String]) {
-    var fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: uuids, options: nil)
-    if fetchResult.count == 0 {
-        let suffixed = uuids.map { $0 + "/L0/001" }
-        fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: suffixed, options: nil)
+    let args = CommandLine.arguments
+    let progressFilePath: String? = {
+        if let idx = args.firstIndex(of: "--progress-file"), idx + 1 < args.count {
+            return args[idx + 1]
+        }
+        return nil
+    }()
+
+    func writeProgress(_ done: Int) {
+        if let path = progressFilePath {
+            try? "\(done)".write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 
-    if fetchResult.count == 0 {
-        fputs("No assets found for any of the \(uuids.count) UUIDs.\n", stderr)
-        exit(3)
-    }
-
+    // Find or create album
     let albumFetch = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
     var targetAlbum: PHAssetCollection? = nil
     albumFetch.enumerateObjects { collection, _, stop in
@@ -109,12 +113,37 @@ func runAlbumCommand(albumName: String, uuids: [String]) {
             exit(4)
         }
 
-        try PHPhotoLibrary.shared().performChangesAndWait {
-            guard let addRequest = PHAssetCollectionChangeRequest(for: album) else { return }
-            addRequest.addAssets(fetchResult)
+        // Process in batches for progress reporting
+        let batchSize = 1000
+        var totalAdded = 0
+
+        for batchStart in stride(from: 0, to: uuids.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, uuids.count)
+            let batchUUIDs = Array(uuids[batchStart..<batchEnd])
+
+            var fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: batchUUIDs, options: nil)
+            if fetchResult.count == 0 {
+                let suffixed = batchUUIDs.map { $0 + "/L0/001" }
+                fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: suffixed, options: nil)
+            }
+
+            if fetchResult.count > 0 {
+                try PHPhotoLibrary.shared().performChangesAndWait {
+                    guard let addRequest = PHAssetCollectionChangeRequest(for: album) else { return }
+                    addRequest.addAssets(fetchResult)
+                }
+                totalAdded += fetchResult.count
+            }
+
+            writeProgress(batchEnd)
         }
 
-        print("\(fetchResult.count)")
+        if totalAdded == 0 {
+            fputs("No assets found for any of the \(uuids.count) UUIDs.\n", stderr)
+            exit(3)
+        }
+
+        print("\(totalAdded)")
     } catch {
         fputs("PhotoKit error: \(error.localizedDescription)\n", stderr)
         exit(5)

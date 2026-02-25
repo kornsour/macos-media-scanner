@@ -95,7 +95,9 @@ def _add_batch_to_album(uuids: list[str]) -> bool:
     return _run_applescript(script, timeout=600)
 
 
-def create_deletion_album(uuids: list[str], batch_size: int = 500) -> bool:
+def create_deletion_album(
+    uuids: list[str], batch_size: int = 500, progress_callback=None
+) -> bool:
     """Create (or update) an album in Photos.app containing the items to delete.
 
     Processes UUIDs in batches via temp-file AppleScript to avoid OS arg limits.
@@ -111,5 +113,7 @@ def create_deletion_album(uuids: list[str], batch_size: int = 500) -> bool:
         batch = uuids[i : i + batch_size]
         if not _add_batch_to_album(batch):
             return False
+        if progress_callback:
+            progress_callback(min(i + batch_size, len(uuids)))
 
     return True

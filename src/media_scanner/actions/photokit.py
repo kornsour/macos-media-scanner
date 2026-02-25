@@ -138,7 +138,9 @@ def _run_bridge(args: list[str], stdin_data: str, timeout: int = 600) -> dict:
         stderr_file.unlink(missing_ok=True)
 
 
-def create_deletion_album_photokit(uuids: list[str], album_name: str) -> dict:
+def create_deletion_album_photokit(
+    uuids: list[str], album_name: str, progress_file: Path | None = None
+) -> dict:
     """Create an album in Photos.app using PhotoKit.
 
     Compiles the Swift bridge on first use (cached at ~/.media-scanner/).
@@ -152,8 +154,12 @@ def create_deletion_album_photokit(uuids: list[str], album_name: str) -> dict:
             return {"success": False, "error": "compile_failed"}
 
     try:
+        args = ["--album", album_name]
+        if progress_file:
+            args.extend(["--progress-file", str(progress_file)])
+
         result = _run_bridge(
-            ["--album", album_name],
+            args,
             "\n".join(uuids),
             timeout=600,
         )

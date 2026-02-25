@@ -158,16 +158,59 @@ def actions(
                             break
                     cache.mark_transfer_applied(t.keeper_uuid, t.group_id, error=error_msg)
 
-        console.print(
-            f"\n[bold]Creating 'Media Scanner - To Delete' album with "
-            f"{format_count(len(deletes))} items...[/bold]"
-        )
-
         uuids = [a.uuid for a in deletes]
+        total = len(uuids)
 
+        import threading
+        from pathlib import Path
+        from rich.progress import (
+            Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn,
+        )
         from media_scanner.actions.photokit import create_deletion_album_photokit
         from media_scanner.actions.applescript import ALBUM_NAME
-        pk_result = create_deletion_album_photokit(uuids, ALBUM_NAME)
+
+        progress_file = Path.home() / ".media-scanner" / "bridge-progress.tmp"
+        progress_file.unlink(missing_ok=True)
+
+        console.print(
+            f"\n[bold]Creating '{ALBUM_NAME}' album with "
+            f"{format_count(total)} items...[/bold]"
+        )
+
+        result_box: list = [None]
+
+        def _run_photokit():
+            result_box[0] = create_deletion_album_photokit(
+                uuids, ALBUM_NAME, progress_file=progress_file,
+            )
+
+        with Progress(
+            SpinnerColumn(),
+            BarColumn(),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Adding", total=total)
+
+            thread = threading.Thread(target=_run_photokit)
+            thread.start()
+
+            while thread.is_alive():
+                if progress_file.exists():
+                    try:
+                        val = int(progress_file.read_text().strip())
+                        progress.update(task, completed=val)
+                    except (ValueError, OSError):
+                        pass
+                thread.join(timeout=0.3)
+
+            # Final update
+            progress.update(task, completed=total)
+
+        progress_file.unlink(missing_ok=True)
+
+        pk_result = result_box[0]
         success = pk_result["success"]
         if not success:
             if pk_result["error"] == "auth_denied":
@@ -183,7 +226,22 @@ def actions(
                     f"falling back to AppleScript...[/yellow]"
                 )
             from media_scanner.actions.applescript import create_deletion_album
-            success = create_deletion_album(uuids)
+
+            with Progress(
+                SpinnerColumn(),
+                BarColumn(),
+                TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Adding (AppleScript)", total=total)
+
+                def _as_progress(done: int):
+                    progress.update(task, completed=done)
+
+                success = create_deletion_album(
+                    uuids, progress_callback=_as_progress,
+                )
 
         if success:
             cache.mark_actions_applied(uuids)
