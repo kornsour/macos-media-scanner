@@ -22,22 +22,37 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-THUMB_SIZE = 240
-THUMB_QUALITY = 65
-
-
-def _make_thumbnail(item: MediaItem) -> bytes | None:
-    """Generate JPEG thumbnail bytes for an item."""
+def _read_original(item: MediaItem) -> tuple[bytes, str] | None:
+    """Read original image file bytes and determine MIME type."""
     if not item.path or not item.path.exists():
         return None
     try:
-        with Image.open(item.path) as img:
-            img.thumbnail((THUMB_SIZE, THUMB_SIZE))
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=THUMB_QUALITY)
-            return buf.getvalue()
+        suffix = item.path.suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".heic": "image/heic",
+            ".heif": "image/heif",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".tiff": "image/tiff",
+            ".tif": "image/tiff",
+            ".bmp": "image/bmp",
+        }
+        mime = mime_map.get(suffix, "image/jpeg")
+
+        # HEIC/HEIF can't be displayed by browsers — convert to JPEG
+        if suffix in (".heic", ".heif"):
+            with Image.open(item.path) as img:
+                if img.mode in ("RGBA", "P", "LA"):
+                    img = img.convert("RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=92)
+                return buf.getvalue(), "image/jpeg"
+
+        data = item.path.read_bytes()
+        return data, mime
     except Exception:
         return None
 
@@ -93,7 +108,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
     groups: list[DuplicateGroup]
     items_by_uuid: dict[str, MediaItem]
     html_content: str
-    thumb_cache: dict[str, bytes | None]
+    thumb_cache: dict[str, tuple[bytes, str] | None]
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         logger.debug(format, *args)
@@ -144,15 +159,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
     def _serve_thumbnail(self, uuid: str) -> None:
         if uuid in self.thumb_cache:
-            data = self.thumb_cache[uuid]
+            result = self.thumb_cache[uuid]
         else:
             item = self.items_by_uuid.get(uuid)
-            data = _make_thumbnail(item) if item else None
-            self.thumb_cache[uuid] = data
+            result = _read_original(item) if item else None
+            self.thumb_cache[uuid] = result
 
-        if data:
+        if result:
+            data, mime = result
             self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "max-age=3600")
             self.end_headers()
@@ -162,11 +178,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
     def _handle_merge(self, body: dict) -> None:
         group_id = body.get("group_id")
-        keep_uuid = body.get("keep_uuid")
+        # Support both keep_uuids (multi-select) and legacy keep_uuid (single)
+        keep_uuids = body.get("keep_uuids") or []
+        if not keep_uuids and body.get("keep_uuid"):
+            keep_uuids = [body["keep_uuid"]]
 
-        if group_id is None or not keep_uuid:
-            self._send_json({"error": "Missing group_id or keep_uuid"}, 400)
+        if group_id is None or not keep_uuids:
+            self._send_json({"error": "Missing group_id or keep_uuids"}, 400)
             return
+
+        keep_uuids_set = set(keep_uuids)
 
         # Find the group
         group = None
@@ -183,7 +204,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
         actions = []
         delete_uuids = []
         for item in group.items:
-            is_keep = item.uuid == keep_uuid
+            is_keep = item.uuid in keep_uuids_set
             action = ActionRecord(
                 uuid=item.uuid,
                 action=ActionType.KEEP if is_keep else ActionType.DELETE,
@@ -192,6 +213,10 @@ class ReviewHandler(BaseHTTPRequestHandler):
             actions.append(action)
             if not is_keep:
                 delete_uuids.append(item.uuid)
+
+        if not delete_uuids:
+            self._send_json({"error": "No items to delete — all are selected as keepers"}, 400)
+            return
 
         # Compute metadata transfers
         transfers = compute_transfers(actions, self.items_by_uuid)
@@ -205,8 +230,10 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 entry["longitude"] = t.transfer_longitude
             transfer_payload.append(entry)
 
-        # Apply via PhotoKit — add duplicates to album, keeper to keepers album
-        pk_result = _apply_photokit(delete_uuids, keep_uuid, transfer_payload)
+        # Apply via PhotoKit — add duplicates to album, keepers to keepers album
+        # Use the first keeper for the _apply_photokit call (backward compat),
+        # then add all keepers to the keepers album
+        pk_result = _apply_photokit(delete_uuids, keep_uuids[0], transfer_payload)
 
         if not pk_result["ok"]:
             error = pk_result.get("error", "unknown")
@@ -219,6 +246,15 @@ class ReviewHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"ok": False, "error": error}, 500)
             return
+
+        # Add remaining keepers to keepers album (first one already added by _apply_photokit)
+        if len(keep_uuids) > 1:
+            from media_scanner.actions.photokit import create_deletion_album_photokit
+
+            extra_keepers = keep_uuids[1:]
+            keeper_result = create_deletion_album_photokit(extra_keepers, KEEPER_ALBUM_NAME)
+            if not keeper_result["success"]:
+                logger.warning("Failed to add extra keepers to album: %s", keeper_result.get("error"))
 
         # Success — save actions as applied, clean up cache
         self.cache.clear_actions_for_group(group_id)
@@ -236,7 +272,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
         self._send_json({
             "ok": True,
-            "keep_uuid": keep_uuid,
+            "keep_uuids": keep_uuids,
             "deletes": len(delete_uuids),
             "transfers": len(transfers),
         })

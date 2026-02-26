@@ -70,15 +70,17 @@ def _build_item_card(
     is_keeper = item.uuid == group.recommended_keep_uuid
 
     classes = ["item-card"]
-    if is_keeper:
-        classes.append("keeper")
-    if interactive:
+    if is_keeper and interactive:
         classes.append("selected")
+    elif is_keeper:
+        classes.append("keeper")
     if action == "delete":
         classes.append("marked-delete")
     elif action == "keep":
         classes.append("marked-keep")
 
+    if interactive:
+        classes.append("interactive")
     data_attrs = f' data-uuid="{item.uuid}"' if interactive else ""
 
     # Thumbnail — server-served lazy URL in interactive mode, inline b64 in static
@@ -242,7 +244,15 @@ def generate_report(
         <span id="review-count">0 of 0 reviewed</span>
         <span class="sticky-stats" id="sticky-stats"></span>
         <button class="btn btn-merge-all" id="merge-all-btn" onclick="mergeAll()">Merge All</button>
-        <span class="sticky-hint">Click to pick the keeper, then Merge to add duplicates to album</span>
+        <div class="size-selector">
+            <label for="size-select">Size:</label>
+            <select id="size-select" onchange="changeSize(this.value)">
+                <option value="small" selected>Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+            </select>
+        </div>
+        <span class="sticky-hint">Click photos to keep (green border). Unselected photos go to delete album.</span>
     </div>"""
 
     js_block = ""
@@ -529,26 +539,33 @@ body {
     color: var(--text);
 }
 .btn-undo:hover { opacity: 0.85; }
+.item-card.interactive {
+    cursor: pointer;
+}
+.item-card.interactive:hover {
+    transform: scale(1.02);
+}
 .item-card.selected {
     border-color: var(--keeper-border);
     background: var(--keeper-bg);
 }
-.item-card:not(.selected) {
-    cursor: pointer;
-}
-.item-card:not(.selected):hover {
-    transform: scale(1.02);
+.item-card.interactive:not(.selected) {
+    border-color: var(--border);
+    background: var(--card-bg);
 }
 .group.merging {
     opacity: 0.6;
     pointer-events: none;
 }
 .group.merged {
-    transition: max-height 0.4s ease-out, opacity 0.3s, margin 0.4s;
-    max-height: 0;
+    transition: max-height 0.4s ease-out, opacity 0.3s, margin 0.4s, padding 0.4s;
+    max-height: 0 !important;
     opacity: 0;
-    margin: 0;
+    margin: 0 !important;
+    padding: 0 !important;
     overflow: hidden;
+    border: none;
+    box-shadow: none;
 }
 .btn:disabled {
     opacity: 0.5;
@@ -574,6 +591,30 @@ body {
     opacity: 0.5;
     cursor: not-allowed;
 }
+/* Size selector */
+.size-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+.size-selector label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.size-selector select {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+    color: var(--text);
+    cursor: pointer;
+}
+/* Card sizes */
+body.size-small .item-card { flex: 0 1 220px; }
+body.size-medium .item-card { flex: 0 1 340px; }
+body.size-large .item-card { flex: 0 1 480px; }
 """
 
 
@@ -582,17 +623,21 @@ def _interactive_js(keeper_map_json: str) -> str:
     return f"""
 <script>
 const keeperMap = {keeper_map_json};
+// selectedKeepers: gid -> Set of selected UUIDs (multi-select)
 const selectedKeepers = {{}};
 let totalGroups = document.querySelectorAll('.group[data-group-id]').length;
 let mergedCount = 0;
 let mergeAllRunning = false;
 
+// Initialize: body size class
+document.body.classList.add('size-small');
+
 // Initialize: select recommended keepers
 for (const [gid, uuid] of Object.entries(keeperMap)) {{
-    selectedKeepers[gid] = uuid;
+    selectedKeepers[gid] = new Set([uuid]);
 }}
 
-// Handle clicking an item card to select it as keeper
+// Handle clicking an item card to toggle its selection
 document.addEventListener('click', (e) => {{
     const card = e.target.closest('.item-card[data-uuid]');
     if (!card) return;
@@ -602,33 +647,59 @@ document.addEventListener('click', (e) => {{
     const gid = group.dataset.groupId;
     const uuid = card.dataset.uuid;
 
-    group.querySelectorAll('.item-card').forEach(c => c.classList.remove('selected'));
-    card.classList.add('selected');
-    selectedKeepers[gid] = uuid;
+    if (!selectedKeepers[gid]) {{
+        selectedKeepers[gid] = new Set();
+    }}
+
+    // Toggle selection
+    if (card.classList.contains('selected')) {{
+        // Don't allow deselecting the last selected item
+        if (selectedKeepers[gid].size <= 1) return;
+        card.classList.remove('selected');
+        selectedKeepers[gid].delete(uuid);
+    }} else {{
+        card.classList.add('selected');
+        selectedKeepers[gid].add(uuid);
+    }}
 }});
 
 // Pre-select the recommended keeper in each group on load
 document.querySelectorAll('.group[data-group-id]').forEach(group => {{
     const gid = group.dataset.groupId;
-    const keepUuid = selectedKeepers[gid];
-    if (keepUuid) {{
-        const card = group.querySelector(`.item-card[data-uuid="${{keepUuid}}"]`);
-        if (card) {{
-            group.querySelectorAll('.item-card').forEach(c => c.classList.remove('selected'));
-            card.classList.add('selected');
-        }}
+    const keepSet = selectedKeepers[gid];
+    if (keepSet) {{
+        group.querySelectorAll('.item-card').forEach(c => {{
+            if (keepSet.has(c.dataset.uuid)) {{
+                c.classList.add('selected');
+            }} else {{
+                c.classList.remove('selected');
+            }}
+        }});
     }}
 }});
 
 updateCounts();
 
+function changeSize(size) {{
+    document.body.classList.remove('size-small', 'size-medium', 'size-large');
+    document.body.classList.add('size-' + size);
+}}
+
 async function mergeGroup(groupId) {{
     const group = document.querySelector(`.group[data-group-id="${{groupId}}"]`);
     if (!group) return false;
 
-    const keepUuid = selectedKeepers[groupId];
-    if (!keepUuid) {{
-        if (!mergeAllRunning) alert('Select a photo to keep first');
+    const keepSet = selectedKeepers[groupId];
+    if (!keepSet || keepSet.size === 0) {{
+        if (!mergeAllRunning) alert('Select at least one photo to keep');
+        return false;
+    }}
+
+    // Check there's at least one non-selected item to delete
+    const allCards = group.querySelectorAll('.item-card[data-uuid]');
+    const totalItems = allCards.length;
+    if (keepSet.size >= totalItems) {{
+        if (!mergeAllRunning) alert('All photos are selected — deselect at least one to mark for deletion');
         return false;
     }}
 
@@ -644,7 +715,10 @@ async function mergeGroup(groupId) {{
         const resp = await fetch('/api/merge', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ group_id: Number(groupId), keep_uuid: keepUuid }}),
+            body: JSON.stringify({{
+                group_id: Number(groupId),
+                keep_uuids: Array.from(keepSet),
+            }}),
         }});
         const data = await resp.json();
         if (data.ok) {{
