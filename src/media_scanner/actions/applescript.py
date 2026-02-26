@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ALBUM_NAME = "Media Scanner - To Delete"
+KEEPER_ALBUM_NAME = "Media Scanner - Keepers"
 
 
 def _run_applescript(script: str, timeout: int = 600) -> bool:
@@ -37,11 +38,11 @@ def _run_applescript(script: str, timeout: int = 600) -> bool:
         tmp_path.unlink(missing_ok=True)
 
 
-def _ensure_album_exists() -> bool:
-    """Create the deletion album if it doesn't already exist. Returns True on success."""
+def _ensure_album_exists(album_name: str = ALBUM_NAME) -> bool:
+    """Create the album if it doesn't already exist. Returns True on success."""
     script = f'''
     tell application "Photos"
-        set albumName to "{ALBUM_NAME}"
+        set albumName to "{album_name}"
         set targetAlbum to missing value
         repeat with a in albums
             if name of a is albumName then
@@ -57,13 +58,13 @@ def _ensure_album_exists() -> bool:
     return _run_applescript(script, timeout=60)
 
 
-def _add_batch_to_album(uuids: list[str]) -> bool:
-    """Add a batch of UUIDs to the existing deletion album."""
+def _add_batch_to_album(uuids: list[str], album_name: str = ALBUM_NAME) -> bool:
+    """Add a batch of UUIDs to the given album."""
     uuid_list = ", ".join(f'"{u}"' for u in uuids)
 
     script = f'''
     tell application "Photos"
-        set albumName to "{ALBUM_NAME}"
+        set albumName to "{album_name}"
         set targetAlbum to missing value
         repeat with a in albums
             if name of a is albumName then
@@ -96,9 +97,12 @@ def _add_batch_to_album(uuids: list[str]) -> bool:
 
 
 def create_deletion_album(
-    uuids: list[str], batch_size: int = 500, progress_callback=None
+    uuids: list[str],
+    batch_size: int = 500,
+    progress_callback=None,
+    album_name_override: str | None = None,
 ) -> bool:
-    """Create (or update) an album in Photos.app containing the items to delete.
+    """Create (or update) an album in Photos.app containing the given items.
 
     Processes UUIDs in batches via temp-file AppleScript to avoid OS arg limits.
     Returns True on success.
@@ -106,12 +110,14 @@ def create_deletion_album(
     if not uuids:
         return True
 
-    if not _ensure_album_exists():
+    album = album_name_override or ALBUM_NAME
+
+    if not _ensure_album_exists(album):
         return False
 
     for i in range(0, len(uuids), batch_size):
         batch = uuids[i : i + batch_size]
-        if not _add_batch_to_album(batch):
+        if not _add_batch_to_album(batch, album):
             return False
         if progress_callback:
             progress_callback(min(i + batch_size, len(uuids)))

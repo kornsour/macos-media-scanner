@@ -18,8 +18,8 @@ class TestCreateDeletionAlbum:
         result = create_deletion_album(["uuid-1", "uuid-2"])
 
         assert result is True
-        mock_ensure.assert_called_once()
-        mock_batch.assert_called_once_with(["uuid-1", "uuid-2"])
+        mock_ensure.assert_called_once_with(ALBUM_NAME)
+        mock_batch.assert_called_once_with(["uuid-1", "uuid-2"], ALBUM_NAME)
 
     @patch("media_scanner.actions.applescript._add_batch_to_album", return_value=True)
     @patch("media_scanner.actions.applescript._ensure_album_exists", return_value=False)

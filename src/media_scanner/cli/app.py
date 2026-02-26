@@ -62,6 +62,7 @@ from media_scanner.cli.bigfiles import big_files  # noqa: E402
 from media_scanner.cli.timeline import timeline  # noqa: E402
 from media_scanner.cli.quality import quality  # noqa: E402
 from media_scanner.cli.actions import actions  # noqa: E402
+from media_scanner.cli.report import report  # noqa: E402
 
 app.command()(scan)
 app.command()(dupes)
@@ -72,3 +73,4 @@ app.command(name="big-files")(big_files)
 app.command()(timeline)
 app.command()(quality)
 app.command()(actions)
+app.command()(report)

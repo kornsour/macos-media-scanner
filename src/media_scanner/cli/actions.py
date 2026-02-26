@@ -167,7 +167,7 @@ def actions(
             Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn,
         )
         from media_scanner.actions.photokit import create_deletion_album_photokit
-        from media_scanner.actions.applescript import ALBUM_NAME
+        from media_scanner.actions.applescript import ALBUM_NAME, KEEPER_ALBUM_NAME
 
         progress_file = Path.home() / ".media-scanner" / "bridge-progress.tmp"
         progress_file.unlink(missing_ok=True)
@@ -244,6 +244,24 @@ def actions(
                 )
 
         if success:
+            # Also add keepers to the keepers album
+            keeps = [a for a in pending if a.action == ActionType.KEEP]
+            if keeps:
+                keeper_uuids = [a.uuid for a in keeps]
+                keeper_result = create_deletion_album_photokit(
+                    keeper_uuids, KEEPER_ALBUM_NAME
+                )
+                if keeper_result["success"]:
+                    console.print(
+                        f"  [green]{len(keeper_uuids)} keeper(s) added to "
+                        f"'{KEEPER_ALBUM_NAME}' album.[/green]"
+                    )
+                else:
+                    console.print(
+                        f"  [yellow]Could not add keepers to album: "
+                        f"{keeper_result.get('error', 'unknown')}[/yellow]"
+                    )
+
             cache.mark_actions_applied(uuids)
             console.print(
                 "[green]Album created! Open Photos.app, review the album, "

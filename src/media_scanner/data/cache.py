@@ -261,6 +261,16 @@ class CacheDB:
         self.conn.execute("DELETE FROM duplicate_groups")
         self.conn.commit()
 
+    def delete_duplicate_group(self, group_id: int) -> None:
+        """Remove a single duplicate group and its members."""
+        self.conn.execute(
+            "DELETE FROM duplicate_group_members WHERE group_id = ?", (group_id,)
+        )
+        self.conn.execute(
+            "DELETE FROM duplicate_groups WHERE group_id = ?", (group_id,)
+        )
+        self.conn.commit()
+
     def save_duplicate_group(self, group: DuplicateGroup) -> int:
         cursor = self.conn.execute(
             "INSERT INTO duplicate_groups (match_type, recommended_keep_uuid) VALUES (?, ?)",
@@ -359,6 +369,18 @@ class CacheDB:
 
     def clear_pending_actions(self) -> None:
         self.conn.execute("DELETE FROM actions WHERE applied = 0")
+        self.conn.commit()
+
+    def clear_actions_for_group(self, group_id: int) -> None:
+        """Remove all pending actions for a specific group."""
+        self.conn.execute(
+            "DELETE FROM actions WHERE group_id = ? AND applied = 0",
+            (group_id,),
+        )
+        self.conn.execute(
+            "DELETE FROM metadata_transfers WHERE group_id = ? AND applied = 0",
+            (group_id,),
+        )
         self.conn.commit()
 
     # ── Metadata Transfers ─────────────────────────────────

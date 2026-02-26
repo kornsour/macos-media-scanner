@@ -187,9 +187,31 @@ media-scanner quality --limit 100
 media-scanner quality --screenshots   # Include screenshots
 ```
 
+### `report`
+
+Generate an HTML report of duplicate groups, or launch an interactive review server with merge support.
+
+```bash
+media-scanner report                    # Static HTML report (opens in browser)
+media-scanner report --serve            # Interactive review server with merge buttons
+media-scanner report --serve --port 9000
+media-scanner report --type exact       # Filter by match type (exact, near, all)
+media-scanner report --limit 200        # Max groups to include (default 100)
+media-scanner report -o my-report.html  # Custom output file
+```
+
+**Interactive mode (`--serve`)** starts a local HTTP server with a browser-based review UI:
+
+- Thumbnails are served on demand (lazy loading) for fast page load
+- Click any photo to select it as the keeper
+- **Merge** button per group — immediately adds duplicates to the "Media Scanner - To Delete" album and the keeper to the "Media Scanner - Keepers" album via PhotoKit
+- **Merge All** button — merges all visible groups sequentially with progress (`Merging 12/100...`)
+- Merged groups slide away with a smooth animation
+- Metadata (date, GPS) is automatically transferred from duplicates to the keeper before merging
+
 ### `actions`
 
-Manage and apply the decisions you made during review.
+Manage and apply the decisions you made during CLI review.
 
 ```bash
 media-scanner actions --list    # See pending decisions
@@ -198,7 +220,7 @@ media-scanner actions --clear   # Discard all pending decisions
 media-scanner actions --export ~/Desktop/keepers  # Copy keepers to a folder
 ```
 
-`--apply` uses PhotoKit (via a compiled Swift .app bundle) for fast, indexed UUID lookups. The app is compiled on first use and cached at `~/.media-scanner/PhotosBridge.app`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically.
+`--apply` uses PhotoKit (via a compiled Swift .app bundle) for fast, indexed UUID lookups. The app is compiled on first use and cached at `~/.media-scanner/PhotosBridge.app`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically. Keepers are also added to a "Media Scanner - Keepers" album for easy verification.
 
 ## How It Works
 
@@ -240,10 +262,11 @@ When duplicates are found, each item is scored to recommend which to keep:
 ### Safety
 
 - **Read-only** — osxphotos never modifies your Photos library
-- **Two-phase actions** — decisions are stored in SQLite, then applied separately
-- **Album-based deletion** — items are added to a Photos album for you to review and delete manually
+- **Two-phase actions** — CLI review decisions are stored in SQLite, then applied separately via `actions --apply`
+- **Interactive merge** — browser-based review with immediate merge applies decisions directly via PhotoKit
+- **Album-based deletion** — duplicates go to "Media Scanner - To Delete", keepers go to "Media Scanner - Keepers" for verification
 - **Automatic fallback** — PhotoKit is preferred for speed, but falls back to AppleScript if Xcode tools aren't available or Photos access is denied
-- **Undo** — you can undo during review and `--clear` pending actions at any time
+- **Undo** — you can undo during CLI review and `--clear` pending actions at any time
 
 ## Global Options
 
@@ -260,7 +283,7 @@ src/media_scanner/
 ├── cli/           # Typer commands (scan, dupes, stats, similar, etc.)
 ├── core/          # Analysis logic (scanner, hasher, duplicate finder, auto resolver)
 ├── data/          # Data models, SQLite cache, migrations
-├── ui/            # Rich console, progress bars, interactive reviewer
+├── ui/            # Rich console, progress bars, interactive reviewer, HTML report, review server
 └── actions/       # PhotoKit bridge, AppleScript fallback, action log, file exporter
     └── swift/     # Swift source for PhotoKit CLI (compiled on first use)
 ```
