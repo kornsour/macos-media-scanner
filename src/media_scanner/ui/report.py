@@ -653,8 +653,6 @@ document.addEventListener('click', (e) => {{
 
     // Toggle selection
     if (card.classList.contains('selected')) {{
-        // Don't allow deselecting the last selected item
-        if (selectedKeepers[gid].size <= 1) return;
         card.classList.remove('selected');
         selectedKeepers[gid].delete(uuid);
     }} else {{
@@ -692,14 +690,6 @@ async function mergeGroup(groupId) {{
     const keepSet = selectedKeepers[groupId];
     if (!keepSet || keepSet.size === 0) {{
         if (!mergeAllRunning) alert('Select at least one photo to keep');
-        return false;
-    }}
-
-    // Check there's at least one non-selected item to delete
-    const allCards = group.querySelectorAll('.item-card[data-uuid]');
-    const totalItems = allCards.length;
-    if (keepSet.size >= totalItems) {{
-        if (!mergeAllRunning) alert('All photos are selected — deselect at least one to mark for deletion');
         return false;
     }}
 

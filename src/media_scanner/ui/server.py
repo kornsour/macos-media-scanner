@@ -214,10 +214,6 @@ class ReviewHandler(BaseHTTPRequestHandler):
             if not is_keep:
                 delete_uuids.append(item.uuid)
 
-        if not delete_uuids:
-            self._send_json({"error": "No items to delete — all are selected as keepers"}, 400)
-            return
-
         # Compute metadata transfers
         transfers = compute_transfers(actions, self.items_by_uuid)
         transfer_payload = []
@@ -230,31 +226,32 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 entry["longitude"] = t.transfer_longitude
             transfer_payload.append(entry)
 
-        # Apply via PhotoKit — add duplicates to album, keepers to keepers album
-        # Use the first keeper for the _apply_photokit call (backward compat),
-        # then add all keepers to the keepers album
-        pk_result = _apply_photokit(delete_uuids, keep_uuids[0], transfer_payload)
+        # Apply via PhotoKit
+        if delete_uuids:
+            pk_result = _apply_photokit(delete_uuids, keep_uuids[0], transfer_payload)
+            if not pk_result["ok"]:
+                error = pk_result.get("error", "unknown")
+                if error == "auth_denied":
+                    self._send_json({
+                        "ok": False,
+                        "error": "Photos access denied. Open System Settings → "
+                                 "Privacy & Security → Photos and enable PhotosBridge.",
+                    }, 403)
+                else:
+                    self._send_json({"ok": False, "error": error}, 500)
+                return
+            # First keeper already added to keepers album by _apply_photokit
+            extra_keepers = keep_uuids[1:]
+        else:
+            # All kept — just add them all to the keepers album
+            extra_keepers = keep_uuids
 
-        if not pk_result["ok"]:
-            error = pk_result.get("error", "unknown")
-            if error == "auth_denied":
-                self._send_json({
-                    "ok": False,
-                    "error": "Photos access denied. Open System Settings → "
-                             "Privacy & Security → Photos and enable PhotosBridge.",
-                }, 403)
-            else:
-                self._send_json({"ok": False, "error": error}, 500)
-            return
-
-        # Add remaining keepers to keepers album (first one already added by _apply_photokit)
-        if len(keep_uuids) > 1:
+        if extra_keepers:
             from media_scanner.actions.photokit import create_deletion_album_photokit
 
-            extra_keepers = keep_uuids[1:]
             keeper_result = create_deletion_album_photokit(extra_keepers, KEEPER_ALBUM_NAME)
             if not keeper_result["success"]:
-                logger.warning("Failed to add extra keepers to album: %s", keeper_result.get("error"))
+                logger.warning("Failed to add keepers to album: %s", keeper_result.get("error"))
 
         # Success — save actions as applied, clean up cache
         self.cache.clear_actions_for_group(group_id)
