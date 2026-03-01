@@ -291,8 +291,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
         # Remove the group from the duplicate_groups table
         self.cache.delete_duplicate_group(group_id)
 
-        # Remove from our in-memory list
-        self.groups = [g for g in self.groups if g.group_id != group_id]
+        # Remove from the class-level list so subsequent requests see the change
+        ReviewHandler.groups = [g for g in ReviewHandler.groups if g.group_id != group_id]
 
         self._send_json({
             "ok": True,
