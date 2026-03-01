@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import webbrowser
 from typing import Annotated
 
 import typer
@@ -19,7 +20,6 @@ from media_scanner.data.cache import CacheDB
 from media_scanner.data.models import ActionType, MatchType
 from media_scanner.ui.console import console
 from media_scanner.ui.progress import create_progress
-from media_scanner.ui.reviewer import ReviewSession
 
 
 def dupes(
@@ -39,10 +39,10 @@ def dupes(
         bool,
         typer.Option("--auto", help="Auto-accept all quality-scorer recommendations."),
     ] = False,
-    review: Annotated[
-        bool,
-        typer.Option("--review/--no-review", help="Start interactive review."),
-    ] = True,
+    port: Annotated[
+        int,
+        typer.Option("--port", help="Port for the browser review server."),
+    ] = 8777,
     limit: Annotated[
         int,
         typer.Option("--limit", help="Max groups to show/review."),
@@ -148,42 +148,20 @@ def dupes(
     if limit > 0:
         all_groups = all_groups[:limit]
 
-    actions = []
-
     if auto:
-        actions = auto_resolve(all_groups, config)
-        for action in actions:
+        from media_scanner.actions.action_log import apply_pending_actions
+
+        resolved = auto_resolve(all_groups, config)
+        for action in resolved:
             cache.save_action(action)
 
-        deletes = sum(1 for a in actions if a.action == ActionType.DELETE)
-        keeps = sum(1 for a in actions if a.action == ActionType.KEEP)
+        deletes = sum(1 for a in resolved if a.action == ActionType.DELETE)
+        keeps = sum(1 for a in resolved if a.action == ActionType.KEEP)
         console.print(f"\n[bold]Auto-resolved: {keeps} keep, {deletes} delete.[/bold]")
-        if deletes:
-            console.print(
-                "Run [cyan]media-scanner actions --list[/cyan] to review, "
-                "or [cyan]media-scanner actions --apply[/cyan] to create the deletion album."
-            )
-    elif review:
-        session = ReviewSession(all_groups, config)
-        actions = session.run()
 
-        # Save actions
-        for action in actions:
-            cache.save_action(action)
-
-        deletes = sum(1 for a in actions if a.action == ActionType.DELETE)
-        keeps = sum(1 for a in actions if a.action == ActionType.KEEP)
-        console.print(f"\n[bold]Decisions: {keeps} keep, {deletes} delete.[/bold]")
-        if deletes:
-            console.print(
-                "Run [cyan]media-scanner actions --list[/cyan] to review, "
-                "or [cyan]media-scanner actions --apply[/cyan] to create the deletion album."
-            )
-
-    # Compute and save metadata transfers
-    if actions:
+        # Compute and save metadata transfers
         items_by_uuid = {item.uuid: item for g in all_groups for item in g.items}
-        transfers = compute_transfers(actions, items_by_uuid)
+        transfers = compute_transfers(resolved, items_by_uuid)
         for transfer in transfers:
             cache.save_metadata_transfer(transfer)
         if transfers:
@@ -192,4 +170,42 @@ def dupes(
                 f"(date/GPS from duplicates to keepers).[/dim]"
             )
 
-    cache.close()
+        # Apply immediately — create albums in Photos.app
+        if deletes:
+            apply_pending_actions(cache)
+
+        cache.close()
+    else:
+        # Launch browser-based review UI
+        _run_review_server(all_groups, config, cache, port)
+
+
+def _run_review_server(groups, config, cache, port: int) -> None:
+    """Launch the browser-based review server after duplicate detection."""
+    from media_scanner.ui.server import start_server
+
+    total_items = sum(len(g.items) for g in groups)
+
+    console.print(
+        f"\n[bold]Starting review server for {len(groups)} groups ({total_items} items)...[/bold]"
+    )
+
+    server = start_server(groups, cache, config, port=port)
+    url = f"http://127.0.0.1:{port}"
+
+    console.print(f"  Review server running at [cyan]{url}[/cyan]")
+    console.print("  [dim]Press Ctrl+C to stop.[/dim]")
+    console.print(
+        "  [dim]Click Merge to add duplicates to the "
+        "\"Media Scanner - To Delete\" album in Photos.app.[/dim]"
+    )
+
+    webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[bold]Server stopped.[/bold]")
+    finally:
+        server.server_close()
+        cache.close()

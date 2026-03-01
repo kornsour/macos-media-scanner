@@ -1,4 +1,4 @@
-"""report command - generate HTML duplicate report."""
+"""review command - interactive browser-based duplicate review."""
 
 from __future__ import annotations
 
@@ -46,33 +46,33 @@ def _load_groups(cache: CacheDB, config, match_type: str, limit: int):
     return groups, mt_filter
 
 
-def report(
-    output: Annotated[
-        Path,
-        typer.Option("--output", "-o", help="Output HTML file path."),
-    ] = Path("duplicates-report.html"),
+def review(
     match_type: Annotated[
         str,
         typer.Option("--type", "-t", help="Filter by match type: exact, near, or all."),
     ] = "all",
     limit: Annotated[
         int,
-        typer.Option("--limit", help="Max groups to include (0 = all, default 100)."),
-    ] = 100,
-    no_open: Annotated[
-        bool,
-        typer.Option("--no-open", help="Don't open the report in a browser."),
-    ] = False,
-    serve: Annotated[
-        bool,
-        typer.Option("--serve", help="Start interactive review server with merge support."),
-    ] = False,
+        typer.Option("--limit", help="Max groups to include (0 = all)."),
+    ] = 0,
     port: Annotated[
         int,
         typer.Option("--port", help="Port for the review server."),
     ] = 8777,
+    static: Annotated[
+        bool,
+        typer.Option("--static", help="Generate a static HTML report instead of the interactive server."),
+    ] = False,
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output HTML file path (only with --static)."),
+    ] = Path("duplicates-report.html"),
+    no_open: Annotated[
+        bool,
+        typer.Option("--no-open", help="Don't open in a browser (only with --static)."),
+    ] = False,
 ) -> None:
-    """Generate an HTML report of duplicate groups with thumbnails."""
+    """Review duplicate groups in an interactive browser UI."""
     config = get_config()
     cache = CacheDB(config.db_path)
 
@@ -88,17 +88,17 @@ def report(
 
     total_items = sum(len(g.items) for g in groups)
 
-    title = "Duplicate Report"
+    title = "Duplicate Review"
     if mt_filter == MatchType.EXACT:
-        title = "Exact Duplicates Report"
+        title = "Exact Duplicates Review"
     elif mt_filter == MatchType.NEAR:
-        title = "Near Duplicates Report"
+        title = "Near Duplicates Review"
 
-    if serve:
-        _run_server(groups, config, cache, actions, title, total_items, port)
-    else:
+    if static:
         _generate_static(groups, config, actions, title, total_items, output, no_open)
         cache.close()
+    else:
+        _run_server(groups, config, cache, actions, title, total_items, port)
 
 
 def _generate_static(groups, config, actions, title, total_items, output, no_open):
@@ -133,13 +133,7 @@ def _run_server(groups, config, cache, actions, title, total_items, port):
         f"[bold]Starting review server for {len(groups)} groups ({total_items} items)...[/bold]"
     )
 
-    # Generate the interactive report (no inline thumbnails — served on demand)
-    html = generate_report(
-        groups, config, actions=actions, title=title,
-        interactive=True,
-    )
-
-    server = start_server(html, groups, cache, config, port=port)
+    server = start_server(groups, cache, config, port=port, title=title)
     url = f"http://127.0.0.1:{port}"
 
     console.print(f"  Review server running at [cyan]{url}[/cyan]")

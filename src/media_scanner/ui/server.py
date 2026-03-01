@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from media_scanner.data.models import DuplicateGroup, MediaItem
 
 logger = logging.getLogger(__name__)
+
+PAGE_SIZE = 50
 
 def _read_original(item: MediaItem) -> tuple[bytes, str] | None:
     """Read original image file bytes and determine MIME type."""
@@ -58,7 +61,7 @@ def _read_original(item: MediaItem) -> tuple[bytes, str] | None:
 
 
 def _apply_photokit(
-    delete_uuids: list[str], keep_uuid: str, transfers: list[dict]
+    delete_uuids: list[str], keep_uuid: str | None, transfers: list[dict]
 ) -> dict:
     """Apply metadata transfers and add deletes/keeper to albums via PhotoKit.
 
@@ -80,10 +83,11 @@ def _apply_photokit(
     # 2. Add duplicates to the deletion album
     pk_result = create_deletion_album_photokit(delete_uuids, ALBUM_NAME)
     if pk_result["success"]:
-        # 3. Add keeper to the keepers album
-        keeper_result = create_deletion_album_photokit([keep_uuid], KEEPER_ALBUM_NAME)
-        if not keeper_result["success"]:
-            logger.warning("Failed to add keeper to album: %s", keeper_result.get("error"))
+        # 3. Add keeper to the keepers album (if any)
+        if keep_uuid:
+            keeper_result = create_deletion_album_photokit([keep_uuid], KEEPER_ALBUM_NAME)
+            if not keeper_result["success"]:
+                logger.warning("Failed to add keeper to album: %s", keeper_result.get("error"))
         return {"ok": True, "error": None}
 
     # PhotoKit failed — try AppleScript fallback
@@ -93,7 +97,8 @@ def _apply_photokit(
 
         success = create_deletion_album(delete_uuids)
         if success:
-            create_deletion_album([keep_uuid], album_name_override=KEEPER_ALBUM_NAME)
+            if keep_uuid:
+                create_deletion_album([keep_uuid], album_name_override=KEEPER_ALBUM_NAME)
             return {"ok": True, "error": None}
         return {"ok": False, "error": "auth_denied"}
 
@@ -107,7 +112,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
     config: Config
     groups: list[DuplicateGroup]
     items_by_uuid: dict[str, MediaItem]
-    html_content: str
+    title: str
     thumb_cache: dict[str, tuple[bytes, str] | None]
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -126,10 +131,31 @@ class ReviewHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length)) if length else {}
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
 
         if path == "/":
-            body = self.html_content.encode()
+            params = parse_qs(parsed.query)
+            page = max(1, int(params.get("page", ["1"])[0]))
+
+            total_groups = len(self.groups)
+            total_pages = max(1, math.ceil(total_groups / PAGE_SIZE))
+            page = min(page, total_pages)
+
+            start = (page - 1) * PAGE_SIZE
+            page_groups = self.groups[start:start + PAGE_SIZE]
+
+            pending = self.cache.get_pending_actions()
+            actions = {a.uuid: a for a in pending}
+
+            from media_scanner.ui.report import generate_page_html
+
+            html = generate_page_html(
+                page_groups, self.config, page, total_pages, total_groups,
+                actions=actions, title=self.title,
+            )
+
+            body = html.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -183,8 +209,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
         if not keep_uuids and body.get("keep_uuid"):
             keep_uuids = [body["keep_uuid"]]
 
-        if group_id is None or not keep_uuids:
-            self._send_json({"error": "Missing group_id or keep_uuids"}, 400)
+        if group_id is None:
+            self._send_json({"error": "Missing group_id"}, 400)
             return
 
         keep_uuids_set = set(keep_uuids)
@@ -228,7 +254,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
         # Apply via PhotoKit
         if delete_uuids:
-            pk_result = _apply_photokit(delete_uuids, keep_uuids[0], transfer_payload)
+            first_keeper = keep_uuids[0] if keep_uuids else None
+            pk_result = _apply_photokit(delete_uuids, first_keeper, transfer_payload)
             if not pk_result["ok"]:
                 error = pk_result.get("error", "unknown")
                 if error == "auth_denied":
@@ -241,7 +268,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": error}, 500)
                 return
             # First keeper already added to keepers album by _apply_photokit
-            extra_keepers = keep_uuids[1:]
+            extra_keepers = keep_uuids[1:] if keep_uuids else []
         else:
             # All kept — just add them all to the keepers album
             extra_keepers = keep_uuids
@@ -284,18 +311,20 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
     def _send_summary(self) -> None:
+        total = len(self.groups)
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
         self._send_json({
-            "total_groups": len(self.groups),
-            "merged": 0,  # groups are removed on merge, so remaining = unreviewed
+            "total_groups": total,
+            "total_pages": total_pages,
         })
 
 
 def start_server(
-    html: str,
     groups: list[DuplicateGroup],
     cache: CacheDB,
     config: Config,
     port: int = 8777,
+    title: str = "Duplicate Review",
 ) -> HTTPServer:
     """Create and return the review HTTP server (call .serve_forever() to run)."""
     items_by_uuid = {
@@ -303,7 +332,7 @@ def start_server(
     }
 
     # Set class-level attributes so all handler instances share state
-    ReviewHandler.html_content = html
+    ReviewHandler.title = title
     ReviewHandler.cache = cache
     ReviewHandler.config = config
     ReviewHandler.groups = groups

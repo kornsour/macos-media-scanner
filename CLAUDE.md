@@ -58,9 +58,9 @@ Size grouping → SHA-256 (exact) → dHash with hamming distance (near) → pHa
 
 ### Two review modes
 
-**CLI review** (`dupes`, `similar`): Decisions stored in SQLite during interactive review. Applied separately via `actions --apply`, which creates Photos albums. Supports undo and `--clear`.
+**Browser review** (`dupes`, `review`): Default. Local HTTP server with interactive HTML UI. `dupes` launches it automatically after finding duplicates. `review` opens it for previously-found groups. Merge button applies decisions immediately via PhotoKit — adds duplicates to "Media Scanner - To Delete" album and keeper to "Media Scanner - Keepers" album. Merge All button processes all visible groups sequentially. Groups are removed from the cache on merge. `server.py` handles the HTTP endpoints; `report.py` generates the HTML with embedded JS for the interactive UI.
 
-**Browser review** (`report --serve`): Local HTTP server with interactive HTML UI. Merge button applies decisions immediately via PhotoKit — adds duplicates to "Media Scanner - To Delete" album and keeper to "Media Scanner - Keepers" album. Merge All button processes all visible groups sequentially. Groups are removed from the cache on merge. `server.py` handles the HTTP endpoints; `report.py` generates the HTML with embedded JS for the interactive UI.
+**CLI review** (`similar`): Decisions stored in SQLite during interactive review. Applied separately via `actions --apply`, which creates Photos albums. Supports undo and `--clear`.
 
 ### PhotoKit bridge
 
@@ -91,7 +91,7 @@ Swift source at `actions/swift/photos_bridge.swift` is compiled on first use via
 | `ui/reviewer.py` | Interactive CLI review session with undo stack |
 | `ui/report.py` | HTML report generator (static + interactive modes), embedded CSS/JS |
 | `ui/server.py` | Local HTTP server for browser review — merge, thumbnails, PhotoKit integration |
-| `cli/report.py` | `report` command — `--serve` for interactive, static HTML otherwise |
+| `cli/report.py` | `review` command — interactive browser UI (default), `--static` for HTML file |
 | `actions/photokit.py` | .app bundle compilation, `open --wait-apps` launch, auth error detection |
 | `actions/swift/Info.plist` | .app bundle identity — `CFBundleExecutable`, `NSPhotoLibraryUsageDescription` |
 | `config.py` | `Config` dataclass — thresholds, quality weights, paths |

@@ -26,7 +26,7 @@ pip3 install -e .
 
 ### PhotoKit setup (first run)
 
-The first time you run `media-scanner actions --apply`, the tool compiles a Swift helper app and macOS will show a **Photos access permission prompt**. Click **Allow** to grant access.
+The first time any command creates a Photos album (e.g., `dupes --auto`, `actions --apply`, or merging in the browser UI), the tool compiles a Swift helper app and macOS will show a **Photos access permission prompt**. Click **Allow** to grant access.
 
 If you missed the prompt or denied it, go to **System Settings → Privacy & Security → Photos** and toggle **PhotosBridge** on.
 
@@ -51,6 +51,8 @@ Both methods are equivalent. The examples below use `media-scanner` but you can 
 
 ## Quick Start
 
+### Manual Review
+
 ```bash
 # 1. Scan your Photos library (caches metadata locally — takes ~1 min for 50K items)
 media-scanner scan
@@ -58,19 +60,23 @@ media-scanner scan
 # 2. See what you're working with
 media-scanner stats
 
-# 3. Find and review exact duplicates
+# 3. Find exact duplicates (opens browser review UI automatically)
 media-scanner dupes --exact
-
-# 4. Apply your decisions (creates a "To Delete" album in Photos.app)
-media-scanner actions --apply
 ```
 
-Or skip interactive review and let the quality scorer decide automatically:
+To continue reviewing after closing the UI tool in the browser, you can run `media-scanner review` to reopen the UI tool with your remaining decisions needed loaded from the cache.
+
+### Automatic Review
+
+Alternatively, you can skip interactive review and let the quality scorer decide automatically (chooses best photo, merges metadata, and drops photos into keep and delete albums immediately):
 
 ```bash
 media-scanner dupes --exact --auto
-media-scanner actions --apply
 ```
+
+### Rescanning and Cache
+
+`media-scanner scan` refreshes media items from the Photos library but does not clear duplicate groups or pending actions. To reset duplicate analysis, re-run `media-scanner dupes`. To clear pending actions, use `media-scanner actions --clear`.
 
 ## Commands
 
@@ -85,7 +91,7 @@ media-scanner scan --library ~/Pictures/Photos\ Library.photoslibrary
 
 ### `dupes`
 
-Multi-stage duplicate detection with interactive review.
+Multi-stage duplicate detection. Automatically opens a browser-based review UI when duplicates are found.
 
 ```bash
 media-scanner dupes --exact          # SHA-256 exact matches only
@@ -93,11 +99,11 @@ media-scanner dupes --near           # Perceptual hashing (dHash + pHash)
 media-scanner dupes --exact --near   # Both
 media-scanner dupes --videos         # Include video duplicates
 media-scanner dupes --auto           # Auto-accept all quality-scorer recommendations
-media-scanner dupes --no-review      # Find dupes without interactive review
 media-scanner dupes --limit 50       # Review only the first 50 groups
+media-scanner dupes --port 9000      # Custom port for the review server
 ```
 
-**How the pipeline works:**
+**Pipeline Flow:**
 
 | Stage | Method                     | What it catches                              |
 | ----- | -------------------------- | -------------------------------------------- |
@@ -107,26 +113,6 @@ media-scanner dupes --limit 50       # Review only the first 50 groups
 | 4     | pHash confirmation         | Reduces false positives from stage 3         |
 
 For videos: groups by duration (within 2 seconds), then SHA-256, then ffmpeg keyframe hashing.
-
-**Interactive review:**
-
-```
-┌─ Duplicate Group 42/1,337 — Type: Exact Match ──────────────┐
-│                                                               │
-│  #   Filename          Size     Res        Date       Score   │
-│  [1] IMG_1234.HEIC    4.2 MB   4032x3024  2024-03-15  0.87  │ ← recommended
-│  [2] IMG_1234(1).HEIC 4.2 MB   4032x3024  2024-03-15  0.85  │
-│  [3] IMG_1234.JPG     1.8 MB   4032x3024  2024-03-15  0.72  │
-│                                                               │
-│  [a]ccept  [c]hoose  [k]eep all  [s]kip  [u]ndo  [q]uit    │
-└───────────────────────────────────────────────────────────────┘
-```
-
-- **accept** — keep the recommended item, mark the rest for deletion
-- **choose** — pick which item to keep yourself
-- **keep all** — don't delete any in this group
-- **skip** — decide later
-- **undo** — go back to the previous group
 
 ### `stats`
 
@@ -147,6 +133,25 @@ media-scanner similar
 media-scanner similar --auto           # Auto-accept recommendations
 media-scanner similar --no-review --limit 100
 ```
+
+**CLI Interactive Review:**
+
+```text
+┌─ Similar Group 42/137 ───────────────────────────────────────┐
+│                                                               │
+│  #   Filename          Size     Res        Date       Score   │
+│  [1] IMG_1234.HEIC    4.2 MB   4032x3024  2024-03-15  0.87  │ ← recommended
+│  [2] IMG_1235.HEIC    3.8 MB   4032x3024  2024-03-15  0.85  │
+│                                                               │
+│  [a]ccept  [c]hoose  [k]eep all  [s]kip  [u]ndo  [q]uit    │
+└───────────────────────────────────────────────────────────────┘
+```
+
+- **accept** — keep the recommended item, mark the rest for deletion
+- **choose** — pick which item to keep yourself
+- **keep all** — don't delete any in this group
+- **skip** — decide later
+- **undo** — go back to the previous group
 
 ### `missing-meta`
 
@@ -187,25 +192,25 @@ media-scanner quality --limit 100
 media-scanner quality --screenshots   # Include screenshots
 ```
 
-### `report`
+### `review`
 
-Generate an HTML report of duplicate groups, or launch an interactive review server with merge support.
+Open the interactive browser UI to review duplicate groups found by `dupes`. The interactive server is the default — use `--static` if you want an HTML file instead.
 
 ```bash
-media-scanner report                    # Static HTML report (opens in browser)
-media-scanner report --serve            # Interactive review server with merge buttons
-media-scanner report --serve --port 9000
-media-scanner report --type exact       # Filter by match type (exact, near, all)
-media-scanner report --limit 200        # Max groups to include (default 100)
-media-scanner report -o my-report.html  # Custom output file
+media-scanner review                    # Interactive review server (default)
+media-scanner review --port 9000        # Custom port
+media-scanner review --type exact       # Filter by match type (exact, near, all)
+media-scanner review --limit 200        # Max groups to include (default: all)
+media-scanner review --static           # Generate a static HTML report file
+media-scanner review --static -o my-report.html  # Custom output file
 ```
 
-**Interactive mode (`--serve`)** starts a local HTTP server with a browser-based review UI:
+The interactive browser UI provides:
 
-- Thumbnails are served on demand (lazy loading) for fast page load
+- Paginated view (50 groups per page) for fast loading even with thousands of groups
 - Click any photo to select it as the keeper
 - **Merge** button per group — immediately adds duplicates to the "Media Scanner - To Delete" album and the keeper to the "Media Scanner - Keepers" album via PhotoKit
-- **Merge All** button — merges all visible groups sequentially with progress (`Merging 12/100...`)
+- **Merge All on Page** button — merges all groups on the current page sequentially, then auto-reloads to show the next batch
 - Merged groups slide away with a smooth animation
 - Metadata (date, GPS) is automatically transferred from duplicates to the keeper before merging
 
@@ -262,8 +267,8 @@ When duplicates are found, each item is scored to recommend which to keep:
 ### Safety
 
 - **Read-only** — osxphotos never modifies your Photos library
-- **Two-phase actions** — CLI review decisions are stored in SQLite, then applied separately via `actions --apply`
-- **Interactive merge** — browser-based review with immediate merge applies decisions directly via PhotoKit
+- **Interactive merge** — browser-based review (default) applies decisions immediately via PhotoKit
+- **Two-phase actions** — CLI review decisions (via `similar`) are stored in SQLite, then applied separately via `actions --apply`
 - **Album-based deletion** — duplicates go to "Media Scanner - To Delete", keepers go to "Media Scanner - Keepers" for verification
 - **Automatic fallback** — PhotoKit is preferred for speed, but falls back to AppleScript if Xcode tools aren't available or Photos access is denied
 - **Undo** — you can undo during CLI review and `--clear` pending actions at any time
