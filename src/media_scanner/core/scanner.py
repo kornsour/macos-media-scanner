@@ -34,6 +34,17 @@ def _safe_path(photo: osxphotos.PhotoInfo) -> Path | None:
         return None
 
 
+def _safe_live_photo_path(photo: osxphotos.PhotoInfo) -> Path | None:
+    """Get the path to the live photo's video component, if available locally."""
+    if not photo.live_photo:
+        return None
+    try:
+        p = photo.path_live_photo
+        return Path(p) if p else None
+    except Exception:
+        return None
+
+
 def _get_albums(photo: osxphotos.PhotoInfo) -> list[str]:
     try:
         return list(photo.albums) if photo.albums else []
@@ -125,6 +136,7 @@ def photo_to_media_item(photo: osxphotos.PhotoInfo) -> MediaItem:
         is_burst=_get_bool(photo, "burst"),
         burst_uuid=_get_burst_uuid(photo),
         live_photo_uuid=None,
+        live_photo_video_path=_safe_live_photo_path(photo),
         apple_score=_get_score(photo),
     )
 

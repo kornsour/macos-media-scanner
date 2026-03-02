@@ -9,6 +9,7 @@ from media_scanner.config import Config
 from media_scanner.core.duplicate_finder import (
     _confirm_with_phash,
     find_exact_duplicates,
+    find_live_photo_video_duplicates,
     find_near_duplicates,
     find_video_duplicates,
 )
@@ -299,3 +300,206 @@ class TestFindVideoDuplicates:
         config = Config()
         find_video_duplicates(cache, config, progress_callback=callback)
         assert callback.call_count >= 1
+
+
+class TestFindLivePhotoVideoDuplicates:
+    @patch("media_scanner.core.duplicate_finder.sha256_file")
+    def test_exact_match_live_photo_vs_video(self, mock_sha, cache: CacheDB):
+        """Live photo .mov with same SHA as standalone video => exact group."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                path=Path("/tmp/lp1.heic"),
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=2.5,
+                file_size=3_000_000,
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=2.5,
+                file_size=5_000_000,
+                sha256="samehash",
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_sha.return_value = "samehash"
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_live_photo_video_duplicates(cache, config)
+        assert len(groups) == 1
+        assert groups[0].match_type == MatchType.EXACT
+        uuids = {i.uuid for i in groups[0].items}
+        assert uuids == {"lp1", "v1"}
+
+    def test_no_live_photos_returns_empty(self, cache: CacheDB):
+        """No live photos with video paths => empty result."""
+        items = [
+            sample_item(
+                uuid="v1", media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=30.0, file_size=50_000_000,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        config = Config()
+        groups = find_live_photo_video_duplicates(cache, config)
+        assert len(groups) == 0
+
+    def test_no_standalone_videos_returns_empty(self, cache: CacheDB):
+        """No standalone videos with duration => empty result."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=2.5,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        config = Config()
+        groups = find_live_photo_video_duplicates(cache, config)
+        assert len(groups) == 0
+
+    @patch("media_scanner.core.duplicate_finder._probe_duration")
+    def test_duration_mismatch_no_group(self, mock_probe, cache: CacheDB):
+        """Live photo and video with very different durations => no match."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=None,
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=60.0,
+                file_size=50_000_000,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_probe.return_value = 2.5  # live photo is 2.5s, video is 60s
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_live_photo_video_duplicates(cache, config)
+        assert len(groups) == 0
+
+    @patch("media_scanner.core.duplicate_finder.sha256_file")
+    def test_different_sha_no_exact_match(self, mock_sha, cache: CacheDB):
+        """Different SHA-256 => no exact group."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=2.5,
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=2.5,
+                file_size=5_000_000,
+                sha256="video_hash",
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_sha.return_value = "live_hash"  # different from video's sha256
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_live_photo_video_duplicates(cache, config, include_near=False)
+        assert len(groups) == 0
+
+    @patch("media_scanner.core.duplicate_finder.video_frames_similar")
+    @patch("media_scanner.core.video_hasher.dhash_video")
+    @patch("media_scanner.core.duplicate_finder.sha256_file")
+    def test_near_match_with_keyframes(
+        self, mock_sha, mock_dhash, mock_similar, cache: CacheDB
+    ):
+        """Near match via keyframe dHash when include_near=True."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=2.5,
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=2.5,
+                file_size=5_000_000,
+                sha256="video_hash",
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_sha.return_value = "live_hash"  # different from video
+        mock_dhash.return_value = ["aa", "bb"]
+        mock_similar.return_value = True
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_live_photo_video_duplicates(
+                cache, config, include_near=True
+            )
+        assert len(groups) == 1
+        assert groups[0].match_type == MatchType.NEAR
+
+    def test_progress_callback_called(self, cache: CacheDB):
+        """Progress callback fires for each live photo processed."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=2.5,
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=2.5,
+                file_size=5_000_000,
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        callback = MagicMock()
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            find_live_photo_video_duplicates(
+                cache, config, progress_callback=callback
+            )
+        assert callback.call_count >= 1
+
+    @patch("media_scanner.core.duplicate_finder._probe_duration")
+    @patch("media_scanner.core.duplicate_finder.sha256_file")
+    def test_fallback_duration_probe(self, mock_sha, mock_probe, cache: CacheDB):
+        """When duration is None, falls back to ffprobe."""
+        items = [
+            sample_item(
+                uuid="lp1",
+                media_type=MediaType.LIVE_PHOTO,
+                live_photo_video_path=Path("/tmp/lp1.mov"),
+                duration=None,  # not in cache
+            ),
+            sample_item(
+                uuid="v1",
+                media_type=MediaType.VIDEO,
+                path=Path("/tmp/v1.mov"),
+                duration=2.5,
+                file_size=5_000_000,
+                sha256="samehash",
+            ),
+        ]
+        cache.upsert_items_batch(items)
+        mock_probe.return_value = 2.5  # ffprobe returns duration
+        mock_sha.return_value = "samehash"
+        config = Config()
+        with patch.object(Path, "exists", return_value=True):
+            groups = find_live_photo_video_duplicates(cache, config)
+        assert len(groups) == 1
+        mock_probe.assert_called_once()

@@ -169,6 +169,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
         elif path == "/api/summary":
             self._send_summary()
 
+        elif path == "/api/all-groups":
+            self._send_all_groups()
+
         else:
             self.send_error(404)
 
@@ -193,12 +196,15 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
         if result:
             data, mime = result
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "max-age=3600")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.end_headers()
+                self.wfile.write(data)
+            except BrokenPipeError:
+                pass  # Browser closed connection before thumbnail was sent
         else:
             self.send_error(404)
 
@@ -317,6 +323,18 @@ class ReviewHandler(BaseHTTPRequestHandler):
             "total_groups": total,
             "total_pages": total_pages,
         })
+
+    def _send_all_groups(self) -> None:
+        """Return all group IDs and their recommended keepers."""
+        groups_data = []
+        for g in self.groups:
+            keep_uuids = [g.recommended_keep_uuid] if g.recommended_keep_uuid else []
+            groups_data.append({
+                "group_id": g.group_id,
+                "keep_uuids": keep_uuids,
+                "item_count": len(g.items),
+            })
+        self._send_json({"groups": groups_data})
 
 
 def start_server(

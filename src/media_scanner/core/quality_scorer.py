@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from media_scanner.config import Config
-from media_scanner.data.models import DuplicateGroup, MediaItem
+from media_scanner.data.models import DuplicateGroup, MediaItem, MediaType
 
 # Higher = better format
 FORMAT_SCORES: dict[str, float] = {
@@ -20,6 +20,10 @@ FORMAT_SCORES: dict[str, float] = {
     "public.heif": 0.75,
     "public.jpeg": 0.6,
     "com.compuserve.gif": 0.3,
+    # Video formats
+    "com.apple.quicktime-movie": 0.7,
+    "public.mpeg-4": 0.65,
+    "com.apple.m4v-video": 0.65,
 }
 
 
@@ -78,6 +82,17 @@ def score_item(item: MediaItem, group: DuplicateGroup, config: Config) -> float:
         score += weights["edit_status"] * 1.0
     else:
         score += weights["edit_status"] * 0.3
+
+    # ── Media type bonus (cross-type groups) ──────────────────
+    # When a live photo competes against a standalone video,
+    # prefer the live photo (it contains both photo + video).
+    has_mixed_types = any(
+        i.media_type == MediaType.VIDEO for i in group.items
+    ) and any(
+        i.media_type == MediaType.LIVE_PHOTO for i in group.items
+    )
+    if has_mixed_types and item.media_type == MediaType.LIVE_PHOTO:
+        score += 0.05
 
     return round(score, 4)
 

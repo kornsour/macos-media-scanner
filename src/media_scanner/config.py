@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,9 @@ class Config:
     dhash_threshold: int = 10  # hamming distance for dHash near-match
     phash_threshold: int = 12  # hamming distance for pHash confirmation
     video_duration_tolerance: float = 2.0  # seconds
+
+    # Parallelism
+    max_workers: int = field(default_factory=lambda: min(os.cpu_count() or 4, 4))
 
     # Quality scoring weights
     quality_weights: dict[str, float] = field(default_factory=lambda: {

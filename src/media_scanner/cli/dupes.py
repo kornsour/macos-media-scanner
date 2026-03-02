@@ -11,6 +11,7 @@ from media_scanner.cli.app import get_config
 from media_scanner.core.auto_resolver import auto_resolve
 from media_scanner.core.duplicate_finder import (
     find_exact_duplicates,
+    find_live_photo_video_duplicates,
     find_near_duplicates,
     find_video_duplicates,
 )
@@ -35,6 +36,10 @@ def dupes(
         bool,
         typer.Option("--videos", help="Include videos in duplicate detection."),
     ] = False,
+    cross: Annotated[
+        bool,
+        typer.Option("--cross", help="Find live photo / video cross-duplicates only (2-5s videos)."),
+    ] = False,
     auto: Annotated[
         bool,
         typer.Option("--auto", help="Auto-accept all quality-scorer recommendations."),
@@ -56,8 +61,8 @@ def dupes(
         console.print("[red]No items in cache. Run 'media-scanner scan' first.[/red]")
         raise typer.Exit(1)
 
-    # Default: find exact if neither flag is set
-    if not exact and not near:
+    # Default: find exact if neither flag is set (unless --cross is the sole mode)
+    if not exact and not near and not cross:
         exact = True
 
     all_groups = []
@@ -70,7 +75,7 @@ def dupes(
             def exact_progress(done: int, total: int) -> None:
                 progress.update(task, completed=done, total=total)
 
-            groups = find_exact_duplicates(cache, progress_callback=exact_progress)
+            groups = find_exact_duplicates(cache, config, progress_callback=exact_progress)
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] exact duplicate groups.")
         all_groups.extend(groups)
@@ -125,6 +130,55 @@ def dupes(
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] video duplicate groups.")
         all_groups.extend(groups)
+
+        # Cross-type: live photo video components vs standalone videos
+        console.print("[bold]Finding live photo / video cross-duplicates...[/bold]")
+        with create_progress() as progress:
+            task = progress.add_task("Comparing live photos", total=100)
+
+            def cross_progress(done: int, total: int) -> None:
+                progress.update(task, completed=done, total=total)
+
+            cross_groups = find_live_photo_video_duplicates(
+                cache, config,
+                progress_callback=cross_progress,
+                include_near=near,
+            )
+
+        if cross_groups:
+            console.print(
+                f"  Found [cyan]{len(cross_groups)}[/cyan] live photo / video duplicate groups."
+            )
+            all_groups.extend(cross_groups)
+        else:
+            console.print("  No live photo / video duplicates found.")
+
+    if cross and not videos:
+        # Standalone --cross mode: only live photo vs short video detection
+        console.print(
+            "[bold]Finding live photo / video cross-duplicates (2-5s videos)...[/bold]"
+        )
+        with create_progress() as progress:
+            task = progress.add_task("Comparing live photos", total=100)
+
+            def cross_only_progress(done: int, total: int) -> None:
+                progress.update(task, completed=done, total=total)
+
+            cross_groups = find_live_photo_video_duplicates(
+                cache, config,
+                progress_callback=cross_only_progress,
+                include_near=True,
+                min_duration=2.0,
+                max_duration=5.0,
+            )
+
+        if cross_groups:
+            console.print(
+                f"  Found [cyan]{len(cross_groups)}[/cyan] live photo / video duplicate groups."
+            )
+            all_groups.extend(cross_groups)
+        else:
+            console.print("  No live photo / video duplicates found.")
 
     if not all_groups:
         console.print("[green]No duplicates found![/green]")

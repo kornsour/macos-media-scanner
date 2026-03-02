@@ -38,6 +38,10 @@ def main(
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose output."),
     ] = False,
+    workers: Annotated[
+        Optional[int],
+        typer.Option("--workers", "-w", help="Max parallel workers for hashing (default: auto)."),
+    ] = None,
 ) -> None:
     """Global options applied to all commands."""
     if db_path:
@@ -45,6 +49,8 @@ def main(
     if library:
         _config.photos_library = library
     _config.verbose = verbose
+    if workers is not None:
+        _config.max_workers = max(1, workers)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.WARNING,
         format="%(levelname)s: %(message)s",

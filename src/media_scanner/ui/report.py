@@ -591,6 +591,23 @@ body {
     opacity: 0.5;
     cursor: not-allowed;
 }
+.btn-merge-all-global {
+    background: #c0392b;
+    color: #fff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+.btn-merge-all-global:hover {
+    background: #a93226;
+}
+.btn-merge-all-global:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 /* Size selector */
 .size-selector {
     display: flex;
@@ -822,6 +839,7 @@ def generate_page_html(
         <span id="review-count">{total_groups} groups remaining</span>
         <span class="sticky-stats" id="sticky-stats"></span>
         <button class="btn btn-merge-all" id="merge-all-btn" onclick="mergeAllOnPage()">Merge All on Page</button>
+        <button class="btn btn-merge-all-global" id="merge-all-global-btn" onclick="mergeAllGroups()">Merge All Groups</button>
         <div class="size-selector">
             <label for="size-select">Size:</label>
             <select id="size-select" onchange="changeSize(this.value)">
@@ -1088,6 +1106,90 @@ async function mergeAllOnPage() {{
             btn.textContent = 'Page Done — Reload to continue';
             btn.disabled = false;
         }}
+    }}
+}}
+
+async function mergeAllGroups() {{
+    const globalBtn = document.getElementById('merge-all-global-btn');
+
+    // Fetch all groups from the server
+    let allGroups;
+    try {{
+        const resp = await fetch('/api/all-groups');
+        const data = await resp.json();
+        allGroups = data.groups;
+    }} catch (err) {{
+        alert('Failed to fetch groups: ' + err.message);
+        return;
+    }}
+
+    if (!allGroups || allGroups.length === 0) {{
+        alert('No groups to merge.');
+        return;
+    }}
+
+    const totalItems = allGroups.reduce((s, g) => s + g.item_count, 0);
+    const totalKeep = allGroups.length;
+    const totalDelete = totalItems - totalKeep;
+
+    if (!confirm(
+        `Merge ALL ${{allGroups.length}} groups across all pages?\\n\\n` +
+        `This will:\\n` +
+        `  • Keep ${{totalKeep}} recommended items\\n` +
+        `  • Add ${{totalDelete}} duplicates to the "To Delete" album\\n\\n` +
+        `This cannot be undone. Continue?`
+    )) {{
+        return;
+    }}
+
+    globalBtn.disabled = true;
+    mergeAllRunning = true;
+    let done = 0;
+    let failed = 0;
+    const total = allGroups.length;
+    globalBtn.textContent = `Merging 0/${{total}}...`;
+
+    for (const g of allGroups) {{
+        // Use server-recommended keepers, but respect any local overrides for on-page groups
+        const keepUuids = selectedKeepers[g.group_id]
+            ? Array.from(selectedKeepers[g.group_id])
+            : g.keep_uuids;
+
+        try {{
+            const resp = await fetch('/api/merge', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{
+                    group_id: g.group_id,
+                    keep_uuids: keepUuids,
+                }}),
+            }});
+            const data = await resp.json();
+            if (data.ok) {{
+                // Mark on-page group as merged if visible
+                const el = document.querySelector(`.group[data-group-id="${{g.group_id}}"]`);
+                if (el) {{
+                    el.classList.add('merged');
+                }}
+            }} else {{
+                failed++;
+            }}
+        }} catch (err) {{
+            failed++;
+        }}
+        done++;
+        globalBtn.textContent = `Merging ${{done}}/${{total}}...`;
+    }}
+
+    mergeAllRunning = false;
+
+    if (failed > 0) {{
+        globalBtn.textContent = `Done (${{failed}} failed)`;
+        globalBtn.disabled = false;
+    }} else {{
+        globalBtn.textContent = 'All Done!';
+        document.getElementById('merge-all-btn').disabled = true;
+        document.getElementById('review-count').textContent = 'All groups merged!';
     }}
 }}
 

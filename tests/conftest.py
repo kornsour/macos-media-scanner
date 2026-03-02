@@ -48,6 +48,7 @@ def sample_item(**overrides) -> MediaItem:
         is_burst=False,
         burst_uuid=None,
         live_photo_uuid=None,
+        live_photo_video_path=None,
         apple_score=0.75,
         sha256=None,
         dhash=None,

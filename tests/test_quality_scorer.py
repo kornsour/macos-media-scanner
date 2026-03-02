@@ -4,7 +4,7 @@ from datetime import datetime
 
 from media_scanner.config import Config
 from media_scanner.core.quality_scorer import FORMAT_SCORES, rank_group, score_item
-from media_scanner.data.models import DuplicateGroup, MatchType
+from media_scanner.data.models import DuplicateGroup, MatchType, MediaType
 from tests.conftest import make_group, sample_item
 
 
@@ -145,3 +145,43 @@ class TestRankGroup:
 
         ranked = rank_group(group, config)
         assert ranked.recommended_keep_uuid == "only"
+
+
+class TestCrossTypeScoring:
+    def test_live_photo_preferred_over_video(self):
+        """In a mixed live-photo + video group, live photo should score higher."""
+        config = Config()
+        live = sample_item(
+            uuid="live",
+            media_type=MediaType.LIVE_PHOTO,
+            width=1920, height=1080,
+            file_size=3_000_000,
+            uti="public.heic",
+        )
+        video = sample_item(
+            uuid="vid",
+            media_type=MediaType.VIDEO,
+            width=1920, height=1080,
+            file_size=5_000_000,
+            uti="com.apple.quicktime-movie",
+        )
+        group = make_group([live, video])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "live"
+
+    def test_no_bonus_in_same_type_group(self):
+        """The media type bonus should NOT apply in video-only groups."""
+        config = Config()
+        v1 = sample_item(
+            uuid="v1", media_type=MediaType.VIDEO,
+            file_size=5_000_000, uti="com.apple.quicktime-movie",
+        )
+        v2 = sample_item(
+            uuid="v2", media_type=MediaType.VIDEO,
+            file_size=4_000_000, uti="com.apple.quicktime-movie",
+        )
+        group = make_group([v1, v2])
+        s1 = score_item(v1, group, config)
+        s2 = score_item(v2, group, config)
+        # Larger file should win, no media_type bonus in play
+        assert s1 > s2

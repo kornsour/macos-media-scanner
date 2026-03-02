@@ -56,6 +56,7 @@ class CacheDB:
                 albums, persons, keywords,
                 is_edited, is_favorite, is_hidden, is_screenshot,
                 is_selfie, is_burst, burst_uuid, live_photo_uuid,
+                live_photo_video_path,
                 apple_score, sha256, dhash, phash
             ) VALUES (
                 ?, ?, ?, ?, ?,
@@ -64,6 +65,7 @@ class CacheDB:
                 ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
+                ?,
                 ?, ?, ?, ?
             )
             """,
@@ -94,6 +96,7 @@ class CacheDB:
                 int(item.is_burst),
                 item.burst_uuid,
                 item.live_photo_uuid,
+                str(item.live_photo_video_path) if item.live_photo_video_path else None,
                 item.apple_score,
                 item.sha256,
                 item.dhash,
@@ -134,6 +137,7 @@ class CacheDB:
             is_burst=bool(row["is_burst"]),
             burst_uuid=row["burst_uuid"],
             live_photo_uuid=row["live_photo_uuid"],
+            live_photo_video_path=Path(row["live_photo_video_path"]) if row["live_photo_video_path"] else None,
             apple_score=row["apple_score"],
             sha256=row["sha256"],
             dhash=row["dhash"],
@@ -203,6 +207,14 @@ class CacheDB:
         if len(current_group) >= min_group_size:
             groups.append(current_group)
         return groups
+
+    def get_live_photos_with_video(self) -> list[MediaItem]:
+        """Return live photos that have a local video component path."""
+        rows = self.conn.execute(
+            "SELECT * FROM media_items "
+            "WHERE media_type = 'live_photo' AND live_photo_video_path IS NOT NULL"
+        ).fetchall()
+        return [self._row_to_item(r) for r in rows]
 
     def update_hash(self, uuid: str, hash_type: str, hash_value: str) -> None:
         assert hash_type in ("sha256", "dhash", "phash")
@@ -277,6 +289,7 @@ class CacheDB:
             (group.match_type.value, group.recommended_keep_uuid),
         )
         group_id = cursor.lastrowid
+        group.group_id = group_id
         for item in group.items:
             self.conn.execute(
                 "INSERT INTO duplicate_group_members (group_id, uuid) VALUES (?, ?)",

@@ -58,6 +58,7 @@ class MediaItem:
     is_burst: bool = False
     burst_uuid: str | None = None
     live_photo_uuid: str | None = None
+    live_photo_video_path: Path | None = None  # path to .mov component of live photo
     apple_score: float | None = None  # overall aesthetic score 0-1
     sha256: str | None = None
     dhash: str | None = None
