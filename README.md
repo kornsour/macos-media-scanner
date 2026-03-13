@@ -20,6 +20,8 @@ xcode-select --install
 
 ```bash
 git clone https://github.com/kornsour/macos-media-scanner.git
+python3 -m venv .venv
+source .venv/bin/activate
 cd media-scanner
 pip3 install -e .
 ```
@@ -231,7 +233,7 @@ media-scanner actions --export ~/Desktop/keepers  # Copy keepers to a folder
 
 ### Architecture
 
-```
+```text
 Photos.app ──osxphotos──▶ scanner.py ──▶ SQLite cache ──▶ analysis commands
                               │                               │
                          (only module                    (all read from
@@ -283,7 +285,7 @@ media-scanner -v stats                       # Verbose output
 
 ## Project Structure
 
-```
+```text
 src/media_scanner/
 ├── cli/           # Typer commands (scan, dupes, stats, similar, etc.)
 ├── core/          # Analysis logic (scanner, hasher, duplicate finder, auto resolver)

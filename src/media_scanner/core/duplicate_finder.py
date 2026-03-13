@@ -224,6 +224,9 @@ def find_video_duplicates(
     config: Config,
     progress_callback: Callable[[int, int], None] | None = None,
     include_near: bool = False,
+    sha_progress_callback: Callable[[int, int], None] | None = None,
+    keyframe_progress_callback: Callable[[int, int], None] | None = None,
+    compare_progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[DuplicateGroup]:
     """Find duplicate videos: group by duration, then SHA-256/file-size, then keyframe hashing.
 
@@ -261,7 +264,7 @@ def find_video_duplicates(
         hash_type="sha256",
         cache=cache,
         max_workers=max_workers,
-        progress_callback=progress_callback,
+        progress_callback=sha_progress_callback or progress_callback,
     )
 
     # Phase 3: Group by SHA-256 within each duration group
@@ -337,10 +340,14 @@ def find_video_duplicates(
         frame_hashes = compute_video_hashes_parallel(
             work_items=keyframe_work,
             max_workers=max_workers,
+            progress_callback=keyframe_progress_callback,
         )
 
         visited: set[str] = set()
+        n_unmatched = len(all_unmatched)
         for i, item_a in enumerate(all_unmatched):
+            if compare_progress_callback:
+                compare_progress_callback(i + 1, n_unmatched)
             if item_a.uuid in visited or item_a.uuid not in frame_hashes:
                 continue
             cluster = [item_a]
@@ -398,6 +405,9 @@ def find_live_photo_video_duplicates(
     include_near: bool = False,
     min_duration: float | None = None,
     max_duration: float | None = None,
+    sha_progress_callback: Callable[[int, int], None] | None = None,
+    keyframe_progress_callback: Callable[[int, int], None] | None = None,
+    match_progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[DuplicateGroup]:
     """Find duplicates between live photo video components and standalone videos.
 
@@ -460,17 +470,14 @@ def find_live_photo_video_duplicates(
             if v.path and v.path.exists()
         ]
 
-    # Progress across all phases: SHA + keyframes + matching
-    grand_total = (
-        len(lp_sha_work) + len(vid_sha_work)
-        + len(lp_keyframe_work) + len(vid_keyframe_work)
-        + len(live_photos)
-    )
-    phase_done = [0]  # mutable for closure
+    # SHA-256 progress: combine live photo + video SHA work into one callback
+    sha_total = len(lp_sha_work) + len(vid_sha_work)
+    sha_done = [0]
 
-    def _phased_progress(done: int, total: int) -> None:
-        if progress_callback:
-            progress_callback(phase_done[0] + done, grand_total)
+    def _sha_cb(done: int, total: int) -> None:
+        cb = sha_progress_callback or progress_callback
+        if cb:
+            cb(sha_done[0] + done, sha_total)
 
     lp_sha_results = compute_hashes_parallel(
         work_items=lp_sha_work,
@@ -478,9 +485,9 @@ def find_live_photo_video_duplicates(
         hash_type="sha256",
         cache=cache,
         max_workers=max_workers,
-        progress_callback=_phased_progress,
+        progress_callback=_sha_cb,
     )
-    phase_done[0] += len(lp_sha_work)
+    sha_done[0] += len(lp_sha_work)
 
     vid_sha_results = compute_hashes_parallel(
         work_items=vid_sha_work,
@@ -488,9 +495,8 @@ def find_live_photo_video_duplicates(
         hash_type="sha256",
         cache=cache,
         max_workers=max_workers,
-        progress_callback=_phased_progress,
+        progress_callback=_sha_cb,
     )
-    phase_done[0] += len(vid_sha_work)
 
     # Build lookup of video SHA → items
     vid_sha_lookup: dict[str, list[MediaItem]] = defaultdict(list)
@@ -503,24 +509,34 @@ def find_live_photo_video_duplicates(
     lp_frame_hashes: dict[str, list[str]] = {}
     vid_frame_hashes: dict[str, list[str]] = {}
     if include_near:
+        keyframe_total = len(lp_keyframe_work) + len(vid_keyframe_work)
+        keyframe_done = [0]
+
+        def _kf_cb(done: int, total: int) -> None:
+            cb = keyframe_progress_callback or progress_callback
+            if cb:
+                cb(keyframe_done[0] + done, keyframe_total)
+
         lp_frame_hashes = compute_video_hashes_parallel(
             work_items=lp_keyframe_work,
             max_workers=max_workers,
-            progress_callback=_phased_progress,
+            progress_callback=_kf_cb,
         )
-        phase_done[0] += len(lp_keyframe_work)
+        keyframe_done[0] += len(lp_keyframe_work)
 
         vid_frame_hashes = compute_video_hashes_parallel(
             work_items=vid_keyframe_work,
             max_workers=max_workers,
-            progress_callback=_phased_progress,
+            progress_callback=_kf_cb,
         )
-        phase_done[0] += len(vid_keyframe_work)
 
     # Match live photos against videos using pre-computed hashes
+    n_live = len(live_photos)
     for idx, lp in enumerate(live_photos):
+        _match_cb = match_progress_callback or progress_callback
         if not lp.live_photo_video_path or not lp.live_photo_video_path.exists():
-            _phased_progress(idx + 1, len(live_photos))
+            if _match_cb:
+                _match_cb(idx + 1, n_live)
             continue
 
         # Get live photo video duration (from cache or probe)
@@ -528,7 +544,8 @@ def find_live_photo_video_duplicates(
         if lp_duration is None:
             lp_duration = _probe_duration(lp.live_photo_video_path)
         if lp_duration is None:
-            _phased_progress(idx + 1, len(live_photos))
+            if _match_cb:
+                _match_cb(idx + 1, n_live)
             continue
 
         # Find standalone videos with similar duration
@@ -537,7 +554,8 @@ def find_live_photo_video_duplicates(
             if abs(v.duration - lp_duration) <= tolerance
         ]
         if not candidates:
-            _phased_progress(idx + 1, len(live_photos))
+            if _match_cb:
+                _match_cb(idx + 1, n_live)
             continue
 
         # Stage 1: SHA-256 comparison using pre-computed hashes
@@ -578,6 +596,7 @@ def find_live_photo_video_duplicates(
                         )
                     )
 
-        _phased_progress(idx + 1, len(live_photos))
+        if _match_cb:
+            _match_cb(idx + 1, n_live)
 
     return exact_groups + near_groups

@@ -117,15 +117,29 @@ def dupes(
             console.print("[bold]Finding exact video duplicates (duration + SHA-256)...[/bold]")
 
         with create_progress() as progress:
-            task = progress.add_task("Processing videos", total=100)
+            sha_task = progress.add_task("Hashing videos (SHA-256)", total=100)
+            kf_task = progress.add_task("Extracting keyframes", total=100, visible=False)
+            cmp_task = progress.add_task("Comparing videos", total=100, visible=False)
 
-            def video_progress(done: int, total: int) -> None:
-                progress.update(task, completed=done, total=total)
+            def video_sha_progress(done: int, total: int) -> None:
+                progress.update(sha_task, completed=done, total=total)
+
+            def video_kf_progress(done: int, total: int) -> None:
+                if not progress.tasks[kf_task].visible:
+                    progress.update(kf_task, visible=True, total=total)
+                progress.update(kf_task, completed=done, total=total)
+
+            def video_cmp_progress(done: int, total: int) -> None:
+                if not progress.tasks[cmp_task].visible:
+                    progress.update(cmp_task, visible=True, total=total)
+                progress.update(cmp_task, completed=done, total=total)
 
             groups = find_video_duplicates(
                 cache, config,
-                progress_callback=video_progress,
                 include_near=near,
+                sha_progress_callback=video_sha_progress,
+                keyframe_progress_callback=video_kf_progress if near else None,
+                compare_progress_callback=video_cmp_progress if near else None,
             )
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] video duplicate groups.")
@@ -134,15 +148,27 @@ def dupes(
         # Cross-type: live photo video components vs standalone videos
         console.print("[bold]Finding live photo / video cross-duplicates...[/bold]")
         with create_progress() as progress:
-            task = progress.add_task("Comparing live photos", total=100)
+            sha_task = progress.add_task("Hashing (SHA-256)", total=100)
+            kf_task = progress.add_task("Extracting keyframes", total=100, visible=False)
+            match_task = progress.add_task("Matching", total=100)
 
-            def cross_progress(done: int, total: int) -> None:
-                progress.update(task, completed=done, total=total)
+            def cross_sha_progress(done: int, total: int) -> None:
+                progress.update(sha_task, completed=done, total=total)
+
+            def cross_kf_progress(done: int, total: int) -> None:
+                if not progress.tasks[kf_task].visible:
+                    progress.update(kf_task, visible=True, total=total)
+                progress.update(kf_task, completed=done, total=total)
+
+            def cross_match_progress(done: int, total: int) -> None:
+                progress.update(match_task, completed=done, total=total)
 
             cross_groups = find_live_photo_video_duplicates(
                 cache, config,
-                progress_callback=cross_progress,
                 include_near=near,
+                sha_progress_callback=cross_sha_progress,
+                keyframe_progress_callback=cross_kf_progress if near else None,
+                match_progress_callback=cross_match_progress,
             )
 
         if cross_groups:
@@ -159,16 +185,28 @@ def dupes(
             "[bold]Finding live photo / video cross-duplicates (2-5s videos)...[/bold]"
         )
         with create_progress() as progress:
-            task = progress.add_task("Comparing live photos", total=100)
+            sha_task = progress.add_task("Hashing (SHA-256)", total=100)
+            kf_task = progress.add_task("Extracting keyframes", total=100, visible=False)
+            match_task = progress.add_task("Matching", total=100)
 
-            def cross_only_progress(done: int, total: int) -> None:
-                progress.update(task, completed=done, total=total)
+            def cross_only_sha(done: int, total: int) -> None:
+                progress.update(sha_task, completed=done, total=total)
+
+            def cross_only_kf(done: int, total: int) -> None:
+                if not progress.tasks[kf_task].visible:
+                    progress.update(kf_task, visible=True, total=total)
+                progress.update(kf_task, completed=done, total=total)
+
+            def cross_only_match(done: int, total: int) -> None:
+                progress.update(match_task, completed=done, total=total)
 
             cross_groups = find_live_photo_video_duplicates(
                 cache, config,
-                progress_callback=cross_only_progress,
                 include_near=True,
                 min_duration=2.0,
+                sha_progress_callback=cross_only_sha,
+                keyframe_progress_callback=cross_only_kf,
+                match_progress_callback=cross_only_match,
                 max_duration=5.0,
             )
 
@@ -186,13 +224,21 @@ def dupes(
         return
 
     # Rank all groups
-    for group in all_groups:
-        rank_group(group, config)
+    console.print("[bold]Ranking groups by quality score...[/bold]")
+    with create_progress() as progress:
+        task = progress.add_task("Ranking", total=len(all_groups))
+        for group in all_groups:
+            rank_group(group, config)
+            progress.advance(task)
 
     # Save groups to cache
+    console.print("[bold]Saving groups to cache...[/bold]")
     cache.clear_duplicate_groups()
-    for group in all_groups:
-        cache.save_duplicate_group(group)
+    with create_progress() as progress:
+        task = progress.add_task("Saving", total=len(all_groups))
+        for group in all_groups:
+            cache.save_duplicate_group(group)
+            progress.advance(task)
 
     total_dupes = sum(len(g.items) - 1 for g in all_groups)
     console.print(
