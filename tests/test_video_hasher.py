@@ -19,7 +19,8 @@ class TestVideoFramesSimilar:
         hashes_b = ["dd", "ee", "ff"]
 
         assert video_frames_similar(hashes_a, hashes_b, threshold=10) is True
-        assert mock_hamming.call_count == 3
+        # Best-match alignment: each of 3 frames checks all 3 candidates = 9 calls
+        assert mock_hamming.call_count == 9
 
     @patch("media_scanner.core.hasher.hamming_distance")
     def test_non_matching_hashes(self, mock_hamming):
@@ -40,22 +41,27 @@ class TestVideoFramesSimilar:
         assert video_frames_similar([], [], threshold=10) is False
 
     @patch("media_scanner.core.hasher.hamming_distance")
-    def test_different_lengths_uses_min(self, mock_hamming):
-        """Uses the shorter list for comparison count."""
+    def test_different_lengths_uses_shorter(self, mock_hamming):
+        """Uses the shorter list as the reference for matching."""
         mock_hamming.return_value = 3
         hashes_a = ["aa", "bb"]
         hashes_b = ["cc", "dd", "ee", "ff"]
 
         result = video_frames_similar(hashes_a, hashes_b, threshold=10)
         assert result is True
-        # Should only compare min(2, 4) = 2 pairs
-        assert mock_hamming.call_count == 2
+        # Best-match: each of 2 shorter frames checks all 4 candidates = 8 calls
+        assert mock_hamming.call_count == 8
 
     @patch("media_scanner.core.hasher.hamming_distance")
     def test_60_percent_threshold(self, mock_hamming):
         """Needs >= 60% of frames matching to be similar."""
-        # 5 frames compared, 3 match (60%) => True
-        mock_hamming.side_effect = [5, 5, 5, 50, 50]
+        # Best-match: for each of 5 frames, best distance across 5 candidates.
+        # 3 frames find a match (<=10), 2 don't => 60% => True
+        def _distances(a, b):
+            # Frames a1,a2,a3 each find a close match; a4,a5 don't
+            close = {("a1","b1"), ("a2","b2"), ("a3","b3")}
+            return 5 if (a, b) in close else 50
+        mock_hamming.side_effect = _distances
         hashes_a = ["a1", "a2", "a3", "a4", "a5"]
         hashes_b = ["b1", "b2", "b3", "b4", "b5"]
 
@@ -64,8 +70,11 @@ class TestVideoFramesSimilar:
     @patch("media_scanner.core.hasher.hamming_distance")
     def test_below_60_percent_threshold(self, mock_hamming):
         """Less than 60% matching => not similar."""
-        # 5 frames compared, 2 match (40%) => False
-        mock_hamming.side_effect = [5, 5, 50, 50, 50]
+        # Only 2 of 5 frames find a close match => 40% => False
+        def _distances(a, b):
+            close = {("a1","b1"), ("a2","b2")}
+            return 5 if (a, b) in close else 50
+        mock_hamming.side_effect = _distances
         hashes_a = ["a1", "a2", "a3", "a4", "a5"]
         hashes_b = ["b1", "b2", "b3", "b4", "b5"]
 

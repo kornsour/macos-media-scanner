@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -10,6 +11,16 @@ from pathlib import Path
 from media_scanner.core.hasher import dhash_image, sha256_file
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_frames(frames: list[Path]) -> None:
+    """Remove temporary frame files and their parent directory."""
+    if not frames:
+        return
+    try:
+        shutil.rmtree(frames[0].parent, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def extract_keyframes(video_path: Path, max_frames: int = 8) -> list[Path]:
@@ -63,23 +74,15 @@ def dhash_video(video_path: Path, max_frames: int = 8) -> list[str]:
     Returns a list of dhash hex strings, one per keyframe.
     """
     frames = extract_keyframes(video_path, max_frames=max_frames)
-    hashes = []
-    for frame_path in frames:
-        h = dhash_image(frame_path)
-        if h:
-            hashes.append(h)
-    # Clean up temp files
-    for frame_path in frames:
-        try:
-            frame_path.unlink()
-        except OSError:
-            pass
-    if frames:
-        try:
-            frames[0].parent.rmdir()
-        except OSError:
-            pass
-    return hashes
+    try:
+        hashes = []
+        for frame_path in frames:
+            h = dhash_image(frame_path)
+            if h:
+                hashes.append(h)
+        return hashes
+    finally:
+        _cleanup_frames(frames)
 
 
 def extract_sampled_frames(
@@ -154,38 +157,29 @@ def motion_score(video_path: Path, num_frames: int = 10) -> float:
 
     frames = extract_sampled_frames(video_path, num_frames=num_frames)
     if len(frames) < 2:
-        # Can't assess — assume OK
+        _cleanup_frames(frames)
         return 1.0
 
-    hashes = []
-    for frame_path in frames:
-        h = dhash_image(frame_path)
-        if h:
-            hashes.append(h)
+    try:
+        hashes = []
+        for frame_path in frames:
+            h = dhash_image(frame_path)
+            if h:
+                hashes.append(h)
 
-    # Clean up temp files
-    for frame_path in frames:
-        try:
-            frame_path.unlink()
-        except OSError:
-            pass
-    if frames:
-        try:
-            frames[0].parent.rmdir()
-        except OSError:
-            pass
+        if len(hashes) < 2:
+            return 1.0
 
-    if len(hashes) < 2:
-        return 1.0
+        # Count pairs with actual motion (hamming distance > 3)
+        motion_pairs = 0
+        total_pairs = len(hashes) - 1
+        for i in range(total_pairs):
+            if hamming_distance(hashes[i], hashes[i + 1]) > 3:
+                motion_pairs += 1
 
-    # Count pairs with actual motion (hamming distance > 3)
-    motion_pairs = 0
-    total_pairs = len(hashes) - 1
-    for i in range(total_pairs):
-        if hamming_distance(hashes[i], hashes[i + 1]) > 3:
-            motion_pairs += 1
-
-    return motion_pairs / total_pairs
+        return motion_pairs / total_pairs
+    finally:
+        _cleanup_frames(frames)
 
 
 def video_frames_similar(
@@ -193,17 +187,26 @@ def video_frames_similar(
 ) -> bool:
     """Check if two sets of video keyframe hashes are similar.
 
-    Returns True if the majority of matched frames are within threshold.
+    Uses best-match alignment: for each frame in the shorter list, finds the
+    closest match in the longer list.  This handles slight start-offset
+    differences between re-encoded copies of the same video.
+
+    Returns True if the majority of frames find a match within threshold.
     """
     if not hashes_a or not hashes_b:
         return False
 
     from media_scanner.core.hasher import hamming_distance
 
+    # Ensure hashes_a is the shorter list
+    if len(hashes_a) > len(hashes_b):
+        hashes_a, hashes_b = hashes_b, hashes_a
+
     matches = 0
-    compared = min(len(hashes_a), len(hashes_b))
-    for ha, hb in zip(hashes_a, hashes_b):
-        if hamming_distance(ha, hb) <= threshold:
+    for ha in hashes_a:
+        # Find best match in hashes_b for this frame
+        best = min(hamming_distance(ha, hb) for hb in hashes_b)
+        if best <= threshold:
             matches += 1
 
-    return matches >= compared * 0.6
+    return matches >= len(hashes_a) * 0.6

@@ -200,7 +200,11 @@ class CacheDB:
         groups: list[list[MediaItem]] = []
         current_group = [items[0]]
         for item in items[1:]:
-            if abs(item.duration - current_group[0].duration) <= tolerance:
+            # Compare to the *previous* item (sliding window) rather than
+            # the group anchor.  Since items are sorted by duration, this
+            # chains nearby durations transitively: 10s-11.5s-13s all end
+            # up together when tolerance=2.0s.
+            if abs(item.duration - current_group[-1].duration) <= tolerance:
                 current_group.append(item)
             else:
                 if len(current_group) >= min_group_size:

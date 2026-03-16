@@ -66,6 +66,7 @@ def dupes(
         exact = True
 
     all_groups = []
+    exact_uuids: set[str] = set()
 
     if exact:
         console.print("[bold]Finding exact duplicates (size + SHA-256)...[/bold]")
@@ -79,6 +80,9 @@ def dupes(
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] exact duplicate groups.")
         all_groups.extend(groups)
+        for g in groups:
+            for item in g.items:
+                exact_uuids.add(item.uuid)
 
     if near:
         console.print("[bold]Finding near-duplicates (perceptual hashing)...[/bold]")
@@ -98,6 +102,7 @@ def dupes(
                 cache, config,
                 progress_callback=near_progress,
                 compare_progress_callback=compare_progress,
+                exclude_uuids=exact_uuids if exact_uuids else None,
             )
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] near-duplicate groups.")

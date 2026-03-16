@@ -9,7 +9,7 @@ from PIL import Image
 import imagehash
 
 
-def sha256_file(path: Path, chunk_size: int = 65536) -> str | None:
+def sha256_file(path: Path, chunk_size: int = 1_048_576) -> str | None:
     """Compute SHA-256 hash of a file. Returns None if file is unreadable."""
     try:
         h = hashlib.sha256()
@@ -57,7 +57,7 @@ def hash_hex_to_int(hex_str: str) -> int:
 
 def hamming_distance_int(a: int, b: int) -> int:
     """Fast Hamming distance between two integer hashes using bit ops."""
-    return bin(a ^ b).count("1")
+    return (a ^ b).bit_count()
 
 
 def hamming_distance(hash1: str, hash2: str) -> int:

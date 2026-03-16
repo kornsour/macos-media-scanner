@@ -114,17 +114,23 @@ def find_near_duplicates(
     config: Config,
     progress_callback: Callable[[int, int], None] | None = None,
     compare_progress_callback: Callable[[int, int], None] | None = None,
+    exclude_uuids: set[str] | None = None,
 ) -> list[DuplicateGroup]:
     """Stage 3+4: dHash grouping with pHash confirmation for photos.
 
     Operates on photos that weren't caught as exact duplicates.
+    Pass *exclude_uuids* (e.g. from exact-duplicate groups) to skip items
+    that are already grouped, avoiding redundant comparisons and overlapping groups.
     """
-    # Get all photos that have a path
+    _excluded = exclude_uuids or set()
+
+    # Get all photos that have a path, excluding already-grouped items
     all_items = cache.get_all_items()
     photos = [
         i for i in all_items
         if i.media_type in (MediaType.PHOTO, MediaType.LIVE_PHOTO)
         and i.path and i.path.exists()
+        and i.uuid not in _excluded
     ]
 
     # Identify photos needing dHash computation
@@ -155,35 +161,50 @@ def find_near_duplicates(
     n = len(hashed_photos)
     threshold = config.dhash_threshold
 
-    visited: set[str] = set()
     groups: list[DuplicateGroup] = []
 
-    for i, item_a in enumerate(hashed_photos):
+    # Union-Find for proper transitive clustering — if A~B and B~C,
+    # all three end up in the same group regardless of iteration order.
+    parent: list[int] = list(range(n))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(n):
         if compare_progress_callback:
             compare_progress_callback(i + 1, n)
-        if item_a.uuid in visited:
-            continue
-        cluster = [item_a]
         ha = hash_ints[i]
         for j in range(i + 1, n):
-            item_b = hashed_photos[j]
-            if item_b.uuid in visited:
-                continue
             if hamming_distance_int(ha, hash_ints[j]) <= threshold:
-                cluster.append(item_b)
-                visited.add(item_b.uuid)
-        if len(cluster) >= 2:
-            visited.add(item_a.uuid)
-            # Stage 4: pHash confirmation
-            confirmed = _confirm_with_phash(cluster, cache, config)
-            if len(confirmed) >= 2:
-                groups.append(
-                    DuplicateGroup(
-                        group_id=0,
-                        match_type=MatchType.NEAR,
-                        items=confirmed,
-                    )
+                _union(i, j)
+
+    # Collect clusters from union-find
+    cluster_map: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        cluster_map[_find(i)].append(i)
+
+    for indices in cluster_map.values():
+        if len(indices) < 2:
+            continue
+        cluster = [hashed_photos[i] for i in indices]
+        # Stage 4: pHash confirmation
+        confirmed = _confirm_with_phash(cluster, cache, config)
+        if len(confirmed) >= 2:
+            groups.append(
+                DuplicateGroup(
+                    group_id=0,
+                    match_type=MatchType.NEAR,
+                    items=confirmed,
                 )
+            )
 
     return groups
 
@@ -210,7 +231,12 @@ def _confirm_with_phash(
     confirmed = [anchor]
     for item in candidates[1:]:
         if not item.phash:
-            confirmed.append(item)  # Can't confirm, keep it
+            # Can't compute pHash — drop from confirmed set rather than
+            # risk a false positive.  The dHash match alone isn't enough.
+            logger.debug(
+                "Dropping %s from near-duplicate cluster: pHash unavailable",
+                item.uuid,
+            )
             continue
         dist = hamming_distance(anchor.phash, item.phash)
         if dist <= config.phash_threshold:
