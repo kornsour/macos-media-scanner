@@ -228,7 +228,7 @@ def dupes(
     with create_progress() as progress:
         task = progress.add_task("Ranking", total=len(all_groups))
         for group in all_groups:
-            rank_group(group, config)
+            rank_group(group, config, cache=cache)
             progress.advance(task)
 
     # Save groups to cache

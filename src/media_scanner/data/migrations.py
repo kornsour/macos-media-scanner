@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -115,6 +115,11 @@ MIGRATIONS: dict[int, list[str]] = {
     3: [
         """
         ALTER TABLE media_items ADD COLUMN live_photo_video_path TEXT
+        """,
+    ],
+    4: [
+        """
+        ALTER TABLE media_items ADD COLUMN motion_score REAL
         """,
     ],
 }

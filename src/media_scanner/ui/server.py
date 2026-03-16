@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
+from media_scanner.ui.report import VIDEO_EXTENSIONS, _video_frame_jpeg
+
 from media_scanner.actions.applescript import ALBUM_NAME, KEEPER_ALBUM_NAME
 from media_scanner.core.metadata_merger import compute_transfers
 from media_scanner.data.models import ActionRecord, ActionType
@@ -26,11 +28,19 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 50
 
 def _read_original(item: MediaItem) -> tuple[bytes, str] | None:
-    """Read original image file bytes and determine MIME type."""
+    """Read original image/video-thumbnail file bytes and determine MIME type."""
     if not item.path or not item.path.exists():
         return None
     try:
         suffix = item.path.suffix.lower()
+
+        # Video files — extract a single frame as JPEG
+        if suffix in VIDEO_EXTENSIONS:
+            data = _video_frame_jpeg(item.path, thumb_size=480)
+            if data:
+                return data, "image/jpeg"
+            return None
+
         mime_map = {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",

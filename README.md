@@ -22,7 +22,6 @@ xcode-select --install
 git clone https://github.com/kornsour/macos-media-scanner.git
 python3 -m venv .venv
 source .venv/bin/activate
-cd media-scanner
 pip3 install -e .
 ```
 

@@ -53,6 +53,7 @@ def sample_item(**overrides) -> MediaItem:
         sha256=None,
         dhash=None,
         phash=None,
+        motion_score=None,
     )
     defaults.update(overrides)
     return MediaItem(**defaults)

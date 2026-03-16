@@ -185,3 +185,239 @@ class TestCrossTypeScoring:
         s2 = score_item(v2, group, config)
         # Larger file should win, no media_type bonus in play
         assert s1 > s2
+
+
+class TestVideoDurationScoring:
+    def test_longer_video_preferred(self):
+        """Longer video should be recommended as keeper."""
+        config = Config()
+        longer = sample_item(
+            uuid="long", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=12.0, uti="com.apple.quicktime-movie",
+        )
+        shorter = sample_item(
+            uuid="short", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+        )
+        group = make_group([shorter, longer])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "long"
+
+    def test_longer_video_wins_despite_metadata_disadvantage(self):
+        """Longer duration should win even with worse metadata."""
+        config = Config()
+        longer = sample_item(
+            uuid="long", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=12.0, uti="com.apple.quicktime-movie",
+            has_gps=False, persons=[], keywords=[], albums=[],
+            date_created=datetime(2024, 7, 1),
+        )
+        shorter = sample_item(
+            uuid="short", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            has_gps=True, persons=["Alice"], keywords=["test"], albums=["Vacation"],
+            date_created=datetime(2024, 6, 1),
+        )
+        group = make_group([shorter, longer])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "long"
+
+    def test_no_duration_bonus_for_photos(self):
+        """Duration bonus should not apply to photo groups."""
+        config = Config()
+        a = sample_item(uuid="a", file_size=5_000_000, duration=None)
+        b = sample_item(uuid="b", file_size=5_000_000, duration=None)
+        group = make_group([a, b])
+        s_a = score_item(a, group, config)
+        s_b = score_item(b, group, config)
+        assert s_a == s_b
+
+
+class TestVideoBitrateScoring:
+    def test_higher_bitrate_wins_same_resolution(self):
+        """Same resolution videos: higher bitrate (larger file) should win."""
+        config = Config()
+        high_br = sample_item(
+            uuid="high", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+        )
+        low_br = sample_item(
+            uuid="low", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+        )
+        group = make_group([low_br, high_br])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "high"
+
+    def test_bitrate_bonus_overcomes_metadata_disadvantage(self):
+        """Higher bitrate should win even when the smaller file has better metadata."""
+        config = Config()
+        high_br = sample_item(
+            uuid="high", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            has_gps=False, persons=[], keywords=[], albums=[],
+            date_created=datetime(2024, 7, 1),
+        )
+        low_br = sample_item(
+            uuid="low", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            has_gps=True, persons=["Alice"], keywords=["test"], albums=["Vacation"],
+            date_created=datetime(2024, 6, 1),
+        )
+        group = make_group([low_br, high_br])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "high"
+
+    def test_no_bitrate_bonus_for_different_resolutions(self):
+        """Bitrate bonus should not apply when resolutions differ."""
+        config = Config()
+        v1 = sample_item(
+            uuid="v1", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+        )
+        v2 = sample_item(
+            uuid="v2", media_type=MediaType.VIDEO,
+            width=1280, height=720, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+        )
+        group = make_group([v1, v2])
+        s1 = score_item(v1, group, config)
+        s2 = score_item(v2, group, config)
+        # Higher resolution should win via the resolution factor, not bitrate
+        assert s1 > s2
+
+    def test_no_bitrate_bonus_for_photos(self):
+        """Bitrate bonus should not apply to photo groups."""
+        config = Config()
+        big = sample_item(uuid="big", file_size=10_000_000, duration=None)
+        small = sample_item(uuid="small", file_size=5_000_000, duration=None)
+        group = make_group([big, small])
+        s_big = score_item(big, group, config)
+        s_small = score_item(small, group, config)
+        # Difference should only come from the file_size weight (15%), not bitrate
+        diff = s_big - s_small
+        assert diff < 0.10  # no 15% bitrate bonus stacked on top
+
+
+class TestMotionScoreRanking:
+    def test_full_motion_beats_frozen(self):
+        """Video with full motion should always beat a frozen/corrupted one."""
+        config = Config()
+        good = sample_item(
+            uuid="good", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.9,
+        )
+        frozen = sample_item(
+            uuid="frozen", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.1,
+        )
+        group = make_group([frozen, good])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "good"
+
+    def test_motion_beats_longer_duration(self):
+        """A shorter video with motion should beat a longer frozen one."""
+        config = Config()
+        short_good = sample_item(
+            uuid="short_good", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=8.0, uti="com.apple.quicktime-movie",
+            motion_score=0.9,
+        )
+        long_frozen = sample_item(
+            uuid="long_frozen", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=12.0, uti="com.apple.quicktime-movie",
+            motion_score=0.1,
+        )
+        group = make_group([long_frozen, short_good])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "short_good"
+
+    def test_motion_beats_better_metadata(self):
+        """Motion should beat better metadata, file size, and earlier date."""
+        config = Config()
+        good_motion = sample_item(
+            uuid="good", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.8,
+            has_gps=False, persons=[], keywords=[], albums=[],
+            date_created=datetime(2024, 7, 1),
+        )
+        frozen_rich = sample_item(
+            uuid="frozen", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=50_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.1,
+            has_gps=True, persons=["Alice"], keywords=["test"], albums=["Vacation"],
+            date_created=datetime(2024, 6, 1),
+        )
+        group = make_group([frozen_rich, good_motion])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "good"
+
+    def test_equal_motion_falls_through_to_duration(self):
+        """When motion scores are equal, longer duration still wins."""
+        config = Config()
+        longer = sample_item(
+            uuid="long", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=12.0, uti="com.apple.quicktime-movie",
+            motion_score=0.9,
+        )
+        shorter = sample_item(
+            uuid="short", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.9,
+        )
+        group = make_group([shorter, longer])
+        ranked = rank_group(group, config)
+        assert ranked.recommended_keep_uuid == "long"
+
+    def test_none_motion_score_treated_as_ok(self):
+        """Items without motion_score (not yet computed) should not be penalised."""
+        config = Config()
+        scored = sample_item(
+            uuid="scored", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=0.8,
+        )
+        unscored = sample_item(
+            uuid="unscored", media_type=MediaType.VIDEO,
+            width=1920, height=1080, file_size=10_000_000,
+            duration=10.0, uti="com.apple.quicktime-movie",
+            motion_score=None,
+        )
+        group = make_group([scored, unscored])
+        ranked = rank_group(group, config)
+        # None is treated as 1.0, so unscored should not lose
+        assert ranked.recommended_keep_uuid == "unscored"
+
+    def test_no_motion_check_for_photos(self):
+        """Motion score should not affect photo group ranking."""
+        config = Config()
+        a = sample_item(uuid="a", file_size=5_000_000, motion_score=0.1)
+        b = sample_item(uuid="b", file_size=5_000_000, motion_score=0.9)
+        group = make_group([a, b])
+        ranked = rank_group(group, config)
+        # Photos don't use motion score, so identical items should tie on score
+        # (order may be arbitrary but motion_score should not influence it)
+        s_a = score_item(a, group, config)
+        s_b = score_item(b, group, config)
+        assert s_a == s_b

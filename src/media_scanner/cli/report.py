@@ -33,7 +33,7 @@ def _load_groups(cache: CacheDB, config, match_type: str, limit: int):
         raise typer.Exit(1)
 
     for group in groups:
-        rank_group(group, config)
+        rank_group(group, config, cache=cache)
 
     total_groups = len(groups)
     if limit > 0 and len(groups) > limit:

@@ -57,7 +57,7 @@ class CacheDB:
                 is_edited, is_favorite, is_hidden, is_screenshot,
                 is_selfie, is_burst, burst_uuid, live_photo_uuid,
                 live_photo_video_path,
-                apple_score, sha256, dhash, phash
+                apple_score, sha256, dhash, phash, motion_score
             ) VALUES (
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
@@ -66,7 +66,7 @@ class CacheDB:
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?,
-                ?, ?, ?, ?
+                ?, ?, ?, ?, ?
             )
             """,
             (
@@ -101,6 +101,7 @@ class CacheDB:
                 item.sha256,
                 item.dhash,
                 item.phash,
+                item.motion_score,
             ),
         )
 
@@ -142,6 +143,7 @@ class CacheDB:
             sha256=row["sha256"],
             dhash=row["dhash"],
             phash=row["phash"],
+            motion_score=row["motion_score"],
         )
 
     def get_item(self, uuid: str) -> MediaItem | None:
@@ -215,6 +217,13 @@ class CacheDB:
             "WHERE media_type = 'live_photo' AND live_photo_video_path IS NOT NULL"
         ).fetchall()
         return [self._row_to_item(r) for r in rows]
+
+    def update_motion_score(self, uuid: str, score: float) -> None:
+        self.conn.execute(
+            "UPDATE media_items SET motion_score = ? WHERE uuid = ?",
+            (score, uuid),
+        )
+        self.conn.commit()
 
     def update_hash(self, uuid: str, hash_type: str, hash_value: str) -> None:
         assert hash_type in ("sha256", "dhash", "phash")

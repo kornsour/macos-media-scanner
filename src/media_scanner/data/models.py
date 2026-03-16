@@ -63,6 +63,7 @@ class MediaItem:
     sha256: str | None = None
     dhash: str | None = None
     phash: str | None = None
+    motion_score: float | None = None  # 0.0-1.0, fraction of video with actual motion
 
 
 @dataclass

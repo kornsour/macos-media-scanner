@@ -7,12 +7,16 @@ import html as html_mod
 import io
 import json
 import logging
+import subprocess
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from PIL import Image
+from pillow_heif import register_heif_opener
 
 from media_scanner.core.quality_scorer import score_item
+
+register_heif_opener()
 from media_scanner.data.models import ActionType, MatchType
 
 if TYPE_CHECKING:
@@ -24,12 +28,45 @@ logger = logging.getLogger(__name__)
 THUMB_SIZE = 240
 THUMB_QUALITY = 65
 
+VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm"}
+
+
+def _video_frame_jpeg(path, thumb_size: int = THUMB_SIZE) -> bytes | None:
+    """Extract a single frame from a video using ffmpeg and return JPEG bytes."""
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-ss", "0.5",
+                "-i", str(path),
+                "-vframes", "1",
+                "-vf", f"scale={thumb_size}:-1",
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-q:v", "4",
+                "-",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
 
 def _thumbnail_b64(item: MediaItem) -> str | None:
     """Generate a base64-encoded JPEG thumbnail for an item."""
     if not item.path or not item.path.exists():
         return None
     try:
+        suffix = item.path.suffix.lower()
+        if suffix in VIDEO_EXTENSIONS:
+            data = _video_frame_jpeg(item.path)
+            if data:
+                return base64.b64encode(data).decode("ascii")
+            return None
         with Image.open(item.path) as img:
             img.thumbnail((THUMB_SIZE, THUMB_SIZE))
             if img.mode in ("RGBA", "P", "LA"):
@@ -104,11 +141,12 @@ def _build_item_card(
     elif action == "delete":
         badges.append('<span class="badge badge-delete">Delete</span>')
 
-    from media_scanner.ui.formatters import format_date, format_resolution, format_size
+    from media_scanner.ui.formatters import format_date, format_duration, format_resolution, format_size
 
     date_str = format_date(item.date_created)
     size_str = format_size(item.file_size)
     res_str = format_resolution(item.width, item.height)
+    duration_str = format_duration(item.duration) if item.duration else None
 
     meta_items = []
     if item.is_edited:
@@ -129,7 +167,7 @@ def _build_item_card(
         <div class="item-info">
             <div class="item-filename" title="{html_mod.escape(item.filename)}">{html_mod.escape(item.filename)}</div>
             <div class="item-meta">{date_str}</div>
-            <div class="item-meta">{size_str} &middot; {res_str}</div>
+            <div class="item-meta">{size_str} &middot; {res_str}{f' &middot; {duration_str}' if duration_str else ''}</div>
             <div class="score-bar-wrap">
                 <div class="score-bar" style="width: {score}%"></div>
                 <span class="score-label">Quality: {score}%</span>

@@ -56,7 +56,7 @@ def similar(
         return
 
     for group in groups:
-        rank_group(group, config)
+        rank_group(group, config, cache=cache)
 
     if limit > 0:
         groups = groups[:limit]
