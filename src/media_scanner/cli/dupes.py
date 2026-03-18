@@ -11,6 +11,8 @@ from media_scanner.cli.app import get_config
 from media_scanner.core.auto_resolver import auto_resolve
 from media_scanner.core.duplicate_finder import (
     find_exact_duplicates,
+    find_grainy_duplicates,
+    find_heic_jpeg_duplicates,
     find_live_photo_video_duplicates,
     find_near_duplicates,
     find_video_duplicates,
@@ -40,6 +42,14 @@ def dupes(
         bool,
         typer.Option("--cross", help="Find live photo / video cross-duplicates only (2-5s videos)."),
     ] = False,
+    formats: Annotated[
+        bool,
+        typer.Option("--formats", help="Find HEIC / JPEG cross-format duplicates."),
+    ] = False,
+    grainy: Annotated[
+        bool,
+        typer.Option("--grainy", help="Find grainy/noisy photos with a clearer version."),
+    ] = False,
     auto: Annotated[
         bool,
         typer.Option("--auto", help="Auto-accept all quality-scorer recommendations."),
@@ -61,8 +71,8 @@ def dupes(
         console.print("[red]No items in cache. Run 'media-scanner scan' first.[/red]")
         raise typer.Exit(1)
 
-    # Default: find exact if neither flag is set (unless --cross is the sole mode)
-    if not exact and not near and not cross:
+    # Default: find exact if no mode flag is set (unless --cross/--formats/--grainy is the sole mode)
+    if not exact and not near and not cross and not formats and not grainy:
         exact = True
 
     all_groups = []
@@ -89,6 +99,7 @@ def dupes(
         with create_progress() as progress:
             hash_task = progress.add_task("Hashing", total=100)
             compare_task = progress.add_task("Comparing", total=100, visible=False)
+            phash_task = progress.add_task("Confirming (pHash)", total=100, visible=False)
 
             def near_progress(done: int, total: int) -> None:
                 progress.update(hash_task, completed=done, total=total)
@@ -98,15 +109,82 @@ def dupes(
                     progress.update(compare_task, visible=True, total=total)
                 progress.update(compare_task, completed=done, total=total)
 
+            def phash_progress(done: int, total: int) -> None:
+                if not progress.tasks[phash_task].visible:
+                    progress.update(phash_task, visible=True, total=total)
+                progress.update(phash_task, completed=done, total=total)
+
             groups = find_near_duplicates(
                 cache, config,
                 progress_callback=near_progress,
                 compare_progress_callback=compare_progress,
+                phash_progress_callback=phash_progress,
                 exclude_uuids=exact_uuids if exact_uuids else None,
             )
 
         console.print(f"  Found [cyan]{len(groups)}[/cyan] near-duplicate groups.")
         all_groups.extend(groups)
+
+    if grainy:
+        console.print("[bold]Finding grainy duplicates (noise analysis)...[/bold]")
+        with create_progress() as progress:
+            noise_task = progress.add_task("Analyzing noise", total=100)
+            dhash_task = progress.add_task("Hashing (dHash)", total=100, visible=False)
+            match_task = progress.add_task("Matching", total=100, visible=False)
+
+            def grainy_noise_progress(done: int, total: int) -> None:
+                progress.update(noise_task, completed=done, total=total)
+
+            def grainy_dhash_progress(done: int, total: int) -> None:
+                if not progress.tasks[dhash_task].visible:
+                    progress.update(dhash_task, visible=True, total=total)
+                progress.update(dhash_task, completed=done, total=total)
+
+            def grainy_match_progress(done: int, total: int) -> None:
+                if not progress.tasks[match_task].visible:
+                    progress.update(match_task, visible=True, total=total)
+                progress.update(match_task, completed=done, total=total)
+
+            groups = find_grainy_duplicates(
+                cache, config,
+                noise_progress_callback=grainy_noise_progress,
+                dhash_progress_callback=grainy_dhash_progress,
+                match_progress_callback=grainy_match_progress,
+                exclude_uuids=exact_uuids if exact_uuids else None,
+            )
+
+        console.print(f"  Found [cyan]{len(groups)}[/cyan] grainy duplicate groups.")
+        all_groups.extend(groups)
+
+    if near or formats or cross:
+        # HEIC vs JPEG cross-format detection
+        console.print("[bold]Finding HEIC / JPEG cross-format duplicates...[/bold]")
+        with create_progress() as progress:
+            hash_task = progress.add_task("Hashing", total=100)
+            compare_task = progress.add_task("Comparing", total=100, visible=False)
+
+            def heic_hash_progress(done: int, total: int) -> None:
+                progress.update(hash_task, completed=done, total=total)
+
+            def heic_compare_progress(done: int, total: int) -> None:
+                if not progress.tasks[compare_task].visible:
+                    progress.update(compare_task, visible=True, total=total)
+                progress.update(compare_task, completed=done, total=total)
+
+            heic_jpeg_groups = find_heic_jpeg_duplicates(
+                cache, config,
+                progress_callback=heic_hash_progress,
+                compare_progress_callback=heic_compare_progress,
+                exclude_uuids=exact_uuids if exact_uuids else None,
+            )
+
+        if heic_jpeg_groups:
+            console.print(
+                f"  Found [cyan]{len(heic_jpeg_groups)}[/cyan] HEIC / JPEG duplicate groups."
+            )
+            all_groups.extend(heic_jpeg_groups)
+        else:
+            console.print("  No HEIC / JPEG duplicates found.")
 
     if videos:
         if near:

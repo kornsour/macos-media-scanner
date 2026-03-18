@@ -57,7 +57,8 @@ class CacheDB:
                 is_edited, is_favorite, is_hidden, is_screenshot,
                 is_selfie, is_burst, burst_uuid, live_photo_uuid,
                 live_photo_video_path,
-                apple_score, sha256, dhash, phash, motion_score
+                apple_score, sha256, dhash, phash,
+                dhash_small, phash_small, motion_score
             ) VALUES (
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
@@ -66,7 +67,8 @@ class CacheDB:
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?,
-                ?, ?, ?, ?, ?
+                ?, ?, ?, ?,
+                ?, ?, ?
             )
             """,
             (
@@ -101,6 +103,8 @@ class CacheDB:
                 item.sha256,
                 item.dhash,
                 item.phash,
+                item.dhash_small,
+                item.phash_small,
                 item.motion_score,
             ),
         )
@@ -143,6 +147,8 @@ class CacheDB:
             sha256=row["sha256"],
             dhash=row["dhash"],
             phash=row["phash"],
+            dhash_small=row["dhash_small"],
+            phash_small=row["phash_small"],
             motion_score=row["motion_score"],
         )
 
@@ -230,7 +236,7 @@ class CacheDB:
         self.conn.commit()
 
     def update_hash(self, uuid: str, hash_type: str, hash_value: str) -> None:
-        assert hash_type in ("sha256", "dhash", "phash")
+        assert hash_type in ("sha256", "dhash", "phash", "dhash_small", "phash_small")
         self.conn.execute(
             f"UPDATE media_items SET {hash_type} = ? WHERE uuid = ?",
             (hash_value, uuid),
@@ -242,7 +248,7 @@ class CacheDB:
     ) -> None:
         """Batch update hashes. Each tuple: (uuid, hash_type, hash_value)."""
         for uuid, hash_type, hash_value in updates:
-            assert hash_type in ("sha256", "dhash", "phash")
+            assert hash_type in ("sha256", "dhash", "phash", "dhash_small", "phash_small")
             self.conn.execute(
                 f"UPDATE media_items SET {hash_type} = ? WHERE uuid = ?",
                 (hash_value, uuid),

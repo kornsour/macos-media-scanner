@@ -27,9 +27,19 @@ class TestConfig:
 
     def test_default_thresholds(self):
         c = Config()
-        assert c.dhash_threshold == 10
-        assert c.phash_threshold == 12
+        assert c.dhash_threshold == 38
+        assert c.phash_threshold == 46
         assert c.video_duration_tolerance == 2.0
+
+    def test_default_dual_scale_thresholds(self):
+        c = Config()
+        assert c.dhash_small_threshold == 10
+        assert c.phash_small_threshold == 12
+
+    def test_default_resolution_adaptive(self):
+        c = Config()
+        assert c.resolution_ratio_threshold == 2.0
+        assert c.resolution_adaptive_factor == 1.3
 
     def test_quality_weights_sum_to_one(self):
         c = Config()

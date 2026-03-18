@@ -130,6 +130,16 @@ def score_item(item: MediaItem, group: DuplicateGroup, config: Config) -> float:
     if has_mixed_types and item.media_type == MediaType.LIVE_PHOTO:
         score += 0.05
 
+    # ── HEIC format bonus (cross-format groups) ──────────────
+    # When HEIC and JPEG versions of the same photo exist,
+    # prefer HEIC (better compression, supports HDR/depth data).
+    _heic_utis = {"public.heic", "public.heif"}
+    _jpeg_utis = {"public.jpeg"}
+    group_utis = {i.uti for i in group.items}
+    has_mixed_formats = bool(group_utis & _heic_utis) and bool(group_utis & _jpeg_utis)
+    if has_mixed_formats and item.uti in _heic_utis:
+        score += 0.05
+
     return round(score, 4)
 
 
@@ -139,9 +149,16 @@ def _compute_motion_scores(group: DuplicateGroup) -> None:
     Runs ffmpeg frame sampling — only called for video duplicate groups
     during ranking.  Results are stored on the item objects (and should
     be persisted to cache by the caller if desired).
+
+    Items without paths or that already have scores are skipped.
+    Remaining items are processed in parallel via a thread pool.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from media_scanner.core.video_hasher import motion_score
 
+    # Identify items that need scoring
+    needs_scoring: list[MediaItem] = []
     for item in group.items:
         if item.motion_score is not None:
             continue
@@ -150,10 +167,27 @@ def _compute_motion_scores(group: DuplicateGroup) -> None:
         if not item.path or not item.path.exists():
             item.motion_score = 1.0  # can't assess, assume OK
             continue
-        item.motion_score = motion_score(item.path)
-        logger.debug(
-            "Motion score for %s: %.2f", item.filename, item.motion_score,
-        )
+        needs_scoring.append(item)
+
+    if not needs_scoring:
+        return
+
+    def _score_one(item: MediaItem) -> tuple[MediaItem, float]:
+        return item, motion_score(item.path)
+
+    with ThreadPoolExecutor(max_workers=min(4, len(needs_scoring))) as pool:
+        futures = {pool.submit(_score_one, item): item for item in needs_scoring}
+        for future in as_completed(futures):
+            try:
+                item, score = future.result()
+                item.motion_score = score
+                logger.debug(
+                    "Motion score for %s: %.2f", item.filename, item.motion_score,
+                )
+            except Exception:
+                item = futures[future]
+                item.motion_score = 1.0  # assume OK on error
+                logger.debug("Motion score failed for %s, defaulting to 1.0", item.filename)
 
 
 def rank_group(

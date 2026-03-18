@@ -86,16 +86,16 @@ def dhash_video(video_path: Path, max_frames: int = 8) -> list[str]:
 
 
 def extract_sampled_frames(
-    video_path: Path, num_frames: int = 10
+    video_path: Path, num_frames: int = 5
 ) -> list[Path]:
     """Extract frames evenly spaced across a video's duration.
 
     Unlike extract_keyframes (which grabs I-frames from the start),
     this samples at regular time intervals to cover the full video.
+    Uses a single ffmpeg call with a select filter for performance.
     Returns paths to temporary frame images.
     """
     tmp_dir = tempfile.mkdtemp(prefix="media-scanner-motion-")
-    frames: list[Path] = []
 
     # Get duration via ffprobe
     try:
@@ -117,33 +117,48 @@ def extract_sampled_frames(
     if duration <= 0:
         return []
 
-    # Sample at evenly spaced timestamps
+    # Build timestamps for evenly spaced samples
     interval = duration / (num_frames + 1)
-    for i in range(1, num_frames + 1):
-        ts = interval * i
-        out_path = Path(tmp_dir) / f"sample_{i:04d}.jpg"
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-ss", f"{ts:.3f}",
-                    "-i", str(video_path),
-                    "-vframes", "1",
-                    "-vf", "scale=160:-1",
-                    "-q:v", "4",
-                    str(out_path),
-                ],
-                capture_output=True,
-                timeout=10,
-            )
-            if result.returncode == 0 and out_path.exists():
-                frames.append(out_path)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            continue
+    timestamps = [interval * i for i in range(1, num_frames + 1)]
 
+    # Build a select filter that picks the frame closest to each timestamp
+    # e.g. "lt(prev_pts*TB,0.5)*gte(pts*TB,0.5)+lt(prev_pts*TB,1.0)*gte(pts*TB,1.0)+..."
+    # Simpler approach: use between() windows around each timestamp
+    select_parts = [f"lt(prev_pts*TB\\,{ts:.3f})*gte(pts*TB\\,{ts:.3f})" for ts in timestamps]
+    select_expr = "+".join(select_parts)
+
+    output_pattern = str(Path(tmp_dir) / "sample_%04d.jpg")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i", str(video_path),
+                "-vf", f"select='{select_expr}',scale=160:-1",
+                "-vsync", "vfr",
+                "-frames:v", str(num_frames),
+                "-q:v", "4",
+                output_pattern,
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "ffmpeg sampled frames failed (exit %d) for %s",
+                result.returncode, video_path.name,
+            )
+    except subprocess.TimeoutExpired:
+        logger.debug("ffmpeg sampled frames timed out for %s", video_path.name)
+        return []
+    except FileNotFoundError:
+        logger.debug("ffmpeg not found")
+        return []
+
+    frames = sorted(Path(tmp_dir).glob("sample_*.jpg"))
     return frames
 
 
-def motion_score(video_path: Path, num_frames: int = 10) -> float:
+def motion_score(video_path: Path, num_frames: int = 5) -> float:
     """Compute a motion score for a video (0.0 to 1.0).
 
     Samples frames evenly across the video and compares consecutive

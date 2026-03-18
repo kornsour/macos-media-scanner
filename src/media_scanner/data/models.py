@@ -63,6 +63,8 @@ class MediaItem:
     sha256: str | None = None
     dhash: str | None = None
     phash: str | None = None
+    dhash_small: str | None = None  # dHash at hash_size=8 (64-bit) for dual-scale matching
+    phash_small: str | None = None  # pHash at hash_size=8 (64-bit) for dual-scale matching
     motion_score: float | None = None  # 0.0-1.0, fraction of video with actual motion
 
 

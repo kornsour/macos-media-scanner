@@ -5,8 +5,11 @@ from unittest.mock import MagicMock, patch
 
 from media_scanner.core.hasher import (
     dhash_image,
+    dhash_image_small,
     hamming_distance,
+    noise_level,
     phash_image,
+    phash_image_small,
     sha256_file,
 )
 
@@ -106,4 +109,83 @@ class TestPhashImage:
     def test_returns_none_on_error(self, mock_image):
         mock_image.open.side_effect = Exception("corrupt")
         result = phash_image(Path("/fake/bad.jpg"))
+        assert result is None
+
+
+class TestDhashImageSmall:
+    @patch("media_scanner.core.hasher.Image")
+    @patch("media_scanner.core.hasher.imagehash")
+    def test_calls_dhash_with_hash_size_8(self, mock_imagehash, mock_image):
+        mock_img = MagicMock()
+        mock_image.open.return_value.__enter__ = MagicMock(return_value=mock_img)
+        mock_image.open.return_value.__exit__ = MagicMock(return_value=False)
+        mock_imagehash.dhash.return_value = MagicMock(__str__=lambda self: "abcdef12")
+
+        result = dhash_image_small(Path("/fake/image.jpg"))
+        assert result == "abcdef12"
+        mock_imagehash.dhash.assert_called_once_with(mock_img, hash_size=8)
+
+    @patch("media_scanner.core.hasher.Image")
+    def test_returns_none_on_error(self, mock_image):
+        mock_image.open.side_effect = Exception("corrupt")
+        assert dhash_image_small(Path("/fake/bad.jpg")) is None
+
+
+class TestPhashImageSmall:
+    @patch("media_scanner.core.hasher.Image")
+    @patch("media_scanner.core.hasher.imagehash")
+    def test_calls_phash_with_hash_size_8(self, mock_imagehash, mock_image):
+        mock_img = MagicMock()
+        mock_image.open.return_value.__enter__ = MagicMock(return_value=mock_img)
+        mock_image.open.return_value.__exit__ = MagicMock(return_value=False)
+        mock_imagehash.phash.return_value = MagicMock(__str__=lambda self: "12345678")
+
+        result = phash_image_small(Path("/fake/image.jpg"))
+        assert result == "12345678"
+        mock_imagehash.phash.assert_called_once_with(mock_img, hash_size=8)
+
+    @patch("media_scanner.core.hasher.Image")
+    def test_returns_none_on_error(self, mock_image):
+        mock_image.open.side_effect = Exception("corrupt")
+        assert phash_image_small(Path("/fake/bad.jpg")) is None
+
+
+class TestNoiseLevel:
+    def test_returns_float_for_valid_image(self, tmp_path: Path):
+        """Creates a simple test image and verifies noise_level returns a float."""
+        from PIL import Image
+        img = Image.new("L", (100, 100), color=128)
+        f = tmp_path / "test.png"
+        img.save(f)
+        result = noise_level(f)
+        assert result is not None
+        assert isinstance(result, float)
+        assert result >= 0
+
+    def test_noisy_image_scores_higher(self, tmp_path: Path):
+        """A noisy image should have a higher noise level than a uniform one."""
+        import numpy as np
+        from PIL import Image
+
+        # Uniform gray image
+        uniform = Image.new("L", (512, 512), color=128)
+        f_uniform = tmp_path / "uniform.png"
+        uniform.save(f_uniform)
+
+        # Noisy image
+        rng = np.random.default_rng(42)
+        noisy_arr = rng.integers(0, 255, size=(512, 512), dtype=np.uint8)
+        noisy = Image.fromarray(noisy_arr, mode="L")
+        f_noisy = tmp_path / "noisy.png"
+        noisy.save(f_noisy)
+
+        uniform_score = noise_level(f_uniform)
+        noisy_score = noise_level(f_noisy)
+
+        assert uniform_score is not None
+        assert noisy_score is not None
+        assert noisy_score > uniform_score
+
+    def test_missing_file_returns_none(self):
+        result = noise_level(Path("/fake/missing.jpg"))
         assert result is None

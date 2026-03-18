@@ -9,6 +9,7 @@ from pathlib import Path
 
 ALBUM_NAME = "Media Scanner - To Delete"
 KEEPER_ALBUM_NAME = "Media Scanner - Keepers"
+CORRUPT_ALBUM_NAME = "Media Scanner - Suspect Corrupt"
 
 
 def _run_applescript(script: str, timeout: int = 600) -> bool:

@@ -12,11 +12,11 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
-from media_scanner.ui.report import VIDEO_EXTENSIONS, _video_frame_jpeg
+from media_scanner.ui.report import PAGE_SIZE, VIDEO_EXTENSIONS, _video_frame_jpeg
 
-from media_scanner.actions.applescript import ALBUM_NAME, KEEPER_ALBUM_NAME
+from media_scanner.actions.applescript import ALBUM_NAME, CORRUPT_ALBUM_NAME, KEEPER_ALBUM_NAME
 from media_scanner.core.metadata_merger import compute_transfers
-from media_scanner.data.models import ActionRecord, ActionType
+from media_scanner.data.models import ActionRecord, ActionType, MediaType
 
 if TYPE_CHECKING:
     from media_scanner.config import Config
@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from media_scanner.data.models import DuplicateGroup, MediaItem
 
 logger = logging.getLogger(__name__)
-
-PAGE_SIZE = 50
 
 def _read_original(item: MediaItem) -> tuple[bytes, str] | None:
     """Read original image/video-thumbnail file bytes and determine MIME type."""
@@ -147,13 +145,23 @@ class ReviewHandler(BaseHTTPRequestHandler):
         if path == "/":
             params = parse_qs(parsed.query)
             page = max(1, int(params.get("page", ["1"])[0]))
+            per_page = max(10, min(500, int(params.get("per_page", [str(PAGE_SIZE)])[0])))
+            active_filter = params.get("filter", ["all"])[0]
 
-            total_groups = len(self.groups)
-            total_pages = max(1, math.ceil(total_groups / PAGE_SIZE))
+            from media_scanner.ui.report import group_tags
+
+            # Filter groups server-side if a category is active
+            if active_filter and active_filter != "all":
+                filtered = [g for g in self.groups if active_filter in group_tags(g)]
+            else:
+                filtered = self.groups
+
+            total_groups = len(filtered)
+            total_pages = max(1, math.ceil(total_groups / per_page))
             page = min(page, total_pages)
 
-            start = (page - 1) * PAGE_SIZE
-            page_groups = self.groups[start:start + PAGE_SIZE]
+            start = (page - 1) * per_page
+            page_groups = filtered[start:start + per_page]
 
             pending = self.cache.get_pending_actions()
             actions = {a.uuid: a for a in pending}
@@ -162,7 +170,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
 
             html = generate_page_html(
                 page_groups, self.config, page, total_pages, total_groups,
-                actions=actions, title=self.title,
+                actions=actions, title=self.title, per_page=per_page,
+                active_filter=active_filter,
             )
 
             body = html.encode()
@@ -175,6 +184,10 @@ class ReviewHandler(BaseHTTPRequestHandler):
         elif path.startswith("/thumb/"):
             uuid = path[7:]
             self._serve_thumbnail(uuid)
+
+        elif path.startswith("/video/"):
+            uuid = path[7:]
+            self._serve_video(uuid)
 
         elif path == "/api/summary":
             self._send_summary()
@@ -193,6 +206,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._handle_merge(body)
         elif path == "/api/undo":
             self._handle_undo(body)
+        elif path == "/api/flag-corrupt":
+            self._handle_flag_corrupt(body)
         else:
             self.send_error(404)
 
@@ -217,6 +232,76 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 pass  # Browser closed connection before thumbnail was sent
         else:
             self.send_error(404)
+
+    def _serve_video(self, uuid: str) -> None:
+        """Serve video file with HTTP Range support for seeking."""
+        item = self.items_by_uuid.get(uuid)
+        if not item or not item.path or not item.path.exists():
+            self.send_error(404)
+            return
+
+        suffix = item.path.suffix.lower()
+        if suffix not in VIDEO_EXTENSIONS:
+            self.send_error(404)
+            return
+
+        mime_map = {
+            ".mov": "video/quicktime",
+            ".mp4": "video/mp4",
+            ".m4v": "video/x-m4v",
+            ".avi": "video/x-msvideo",
+            ".mkv": "video/x-matroska",
+            ".webm": "video/webm",
+        }
+        mime = mime_map.get(suffix, "video/mp4")
+        file_size = item.path.stat().st_size
+        chunk_size = 1024 * 1024  # 1MB chunks
+
+        range_header = self.headers.get("Range")
+        try:
+            if range_header:
+                # Parse Range: bytes=start-end
+                range_spec = range_header.replace("bytes=", "").strip()
+                parts = range_spec.split("-")
+                start = int(parts[0])
+                end = int(parts[1]) if parts[1] else min(start + chunk_size - 1, file_size - 1)
+                end = min(end, file_size - 1)
+                length = end - start + 1
+
+                self.send_response(206)
+                self.send_header("Content-Type", mime)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(length))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.end_headers()
+
+                with open(item.path, "rb") as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        to_read = min(chunk_size, remaining)
+                        data = f.read(to_read)
+                        if not data:
+                            break
+                        self.wfile.write(data)
+                        remaining -= len(data)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.end_headers()
+
+                with open(item.path, "rb") as f:
+                    while True:
+                        data = f.read(chunk_size)
+                        if not data:
+                            break
+                        self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Client closed connection
 
     def _handle_merge(self, body: dict) -> None:
         group_id = body.get("group_id")
@@ -326,16 +411,62 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.cache.clear_actions_for_group(group_id)
         self._send_json({"ok": True})
 
+    def _handle_flag_corrupt(self, body: dict) -> None:
+        """Add suspect corrupt videos to a Photos album for review."""
+        threshold = self.config.corrupt_motion_threshold
+
+        if body.get("all"):
+            uuids = [
+                item.uuid
+                for item in self.items_by_uuid.values()
+                if item.motion_score is not None
+                and item.motion_score <= threshold
+                and item.media_type in (MediaType.VIDEO, MediaType.LIVE_PHOTO)
+            ]
+        else:
+            uuids = body.get("uuids", [])
+
+        if not uuids:
+            self._send_json({"ok": True, "count": 0})
+            return
+
+        from media_scanner.actions.photokit import create_deletion_album_photokit
+
+        result = create_deletion_album_photokit(uuids, CORRUPT_ALBUM_NAME)
+        if result["success"]:
+            self._send_json({"ok": True, "count": len(uuids)})
+        else:
+            error = result.get("error", "unknown")
+            if error == "auth_denied":
+                self._send_json({
+                    "ok": False,
+                    "error": "Photos access denied. Open System Settings → "
+                             "Privacy & Security → Photos and enable PhotosBridge.",
+                }, 403)
+            else:
+                self._send_json({"ok": False, "error": error}, 500)
+
     def _send_summary(self) -> None:
+        from collections import Counter
+
+        from media_scanner.ui.report import group_tags
+
         total = len(self.groups)
         total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        counts: Counter[str] = Counter()
+        for g in self.groups:
+            for tag in group_tags(g):
+                counts[tag] += 1
         self._send_json({
             "total_groups": total,
             "total_pages": total_pages,
+            "category_counts": dict(counts),
         })
 
     def _send_all_groups(self) -> None:
-        """Return all group IDs and their recommended keepers."""
+        """Return all group IDs, their recommended keepers, and tags."""
+        from media_scanner.ui.report import group_tags
+
         groups_data = []
         for g in self.groups:
             keep_uuids = [g.recommended_keep_uuid] if g.recommended_keep_uuid else []
@@ -343,6 +474,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 "group_id": g.group_id,
                 "keep_uuids": keep_uuids,
                 "item_count": len(g.items),
+                "tags": group_tags(g),
             })
         self._send_json({"groups": groups_data})
 
@@ -366,6 +498,10 @@ def start_server(
     ReviewHandler.groups = groups
     ReviewHandler.items_by_uuid = items_by_uuid
     ReviewHandler.thumb_cache = {}
+
+    # Share full group list with report module for sidebar counts
+    import media_scanner.ui.report as report_mod
+    report_mod.ReviewHandler_all_groups = groups
 
     server = HTTPServer(("127.0.0.1", port), ReviewHandler)
     return server

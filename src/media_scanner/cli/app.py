@@ -69,6 +69,10 @@ from media_scanner.cli.timeline import timeline  # noqa: E402
 from media_scanner.cli.quality import quality  # noqa: E402
 from media_scanner.cli.actions import actions  # noqa: E402
 from media_scanner.cli.report import review  # noqa: E402
+from media_scanner.cli.short_videos import short_videos  # noqa: E402
+from media_scanner.cli.small_photos import small_photos  # noqa: E402
+from media_scanner.cli.lowres_videos import lowres_videos  # noqa: E402
+from media_scanner.cli.rapid_shots import rapid_shots  # noqa: E402
 
 app.command()(scan)
 app.command()(dupes)
@@ -80,3 +84,7 @@ app.command()(timeline)
 app.command()(quality)
 app.command()(actions)
 app.command()(review)
+app.command(name="short-videos")(short_videos)
+app.command(name="small-photos")(small_photos)
+app.command(name="lowres-videos")(lowres_videos)
+app.command(name="rapid-shots")(rapid_shots)
