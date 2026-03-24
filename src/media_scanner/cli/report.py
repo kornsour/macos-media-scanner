@@ -32,6 +32,22 @@ def _load_groups(cache: CacheDB, config, match_type: str, limit: int):
         cache.close()
         raise typer.Exit(1)
 
+    # Filter out groups whose items were removed by a re-scan (stale references)
+    stale_ids = [g.group_id for g in groups if not g.items]
+    if stale_ids:
+        for gid in stale_ids:
+            cache.delete_duplicate_group(gid)
+        groups = [g for g in groups if g.items]
+        if not groups:
+            console.print(
+                "[yellow]All duplicate groups are stale. Run 'media-scanner dupes' to find fresh duplicates.[/yellow]"
+            )
+            cache.close()
+            raise typer.Exit(1)
+        console.print(
+            f"  [dim]Skipped {len(stale_ids)} stale group(s) with missing items.[/dim]"
+        )
+
     for group in groups:
         rank_group(group, config, cache=cache)
 

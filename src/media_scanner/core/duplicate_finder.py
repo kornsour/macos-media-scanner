@@ -294,8 +294,8 @@ def find_near_duplicates(
     for indices in multi_clusters:
         cluster = [hashed_photos[i] for i in indices]
         # Stage 4: pHash confirmation (hashes already computed above)
-        confirmed = _confirm_with_phash(cluster, cache, config)
-        if len(confirmed) >= 2:
+        confirmed_clusters = _confirm_with_phash(cluster, cache, config)
+        for confirmed in confirmed_clusters:
             groups.append(
                 DuplicateGroup(
                     group_id=0,
@@ -311,11 +311,15 @@ def _confirm_with_phash(
     candidates: list[MediaItem],
     cache: CacheDB,
     config: Config,
-) -> list[MediaItem]:
+) -> list[list[MediaItem]]:
     """Confirm near-duplicates using pHash with transitive clustering.
 
     Uses union-find so that if A~B and B~C, all three stay grouped even
     if A and C aren't directly similar enough.
+
+    Returns a list of confirmed clusters (each with 2+ items).  Previously
+    only the largest cluster was returned, silently dropping valid smaller
+    clusters — now all qualifying clusters are preserved.
     """
     # Compute pHash for candidates that don't have one
     for item in candidates:
@@ -339,7 +343,7 @@ def _confirm_with_phash(
                 "Dropping entire cluster (%d items): no pHash available",
                 len(candidates),
             )
-        return hashed
+        return []
 
     dropped = len(candidates) - len(hashed)
     if dropped:
@@ -384,16 +388,17 @@ def _confirm_with_phash(
             if matched:
                 _union(i, j)
 
-    # Find the largest cluster
+    # Return ALL clusters with 2+ items (not just the largest)
     cluster_map: dict[int, list[int]] = defaultdict(list)
     for i in range(n):
         cluster_map[_find(i)].append(i)
 
-    largest = max(cluster_map.values(), key=len)
-    if len(largest) < 2:
-        return []
+    result: list[list[MediaItem]] = []
+    for indices in cluster_map.values():
+        if len(indices) >= 2:
+            result.append([hashed[i] for i in indices])
 
-    return [hashed[i] for i in largest]
+    return result
 
 
 def find_video_duplicates(
@@ -520,31 +525,49 @@ def find_video_duplicates(
             progress_callback=keyframe_progress_callback,
         )
 
-        visited: set[str] = set()
-        n_unmatched = len(all_unmatched)
-        for i, item_a in enumerate(all_unmatched):
+        # Union-find for proper transitive clustering of near-duplicate videos.
+        # Previously used greedy first-match which was iteration-order dependent:
+        # if A~B and B~C, the greedy approach might miss grouping A with C.
+        hashable_items = [
+            item for item in all_unmatched if item.uuid in frame_hashes
+        ]
+        n_hashable = len(hashable_items)
+
+        parent_v: list[int] = list(range(n_hashable))
+
+        def _find_v(x: int) -> int:
+            while parent_v[x] != x:
+                parent_v[x] = parent_v[parent_v[x]]
+                x = parent_v[x]
+            return x
+
+        def _union_v(a: int, b: int) -> None:
+            ra, rb = _find_v(a), _find_v(b)
+            if ra != rb:
+                parent_v[ra] = rb
+
+        for i in range(n_hashable):
             if compare_progress_callback:
-                compare_progress_callback(i + 1, n_unmatched)
-            if item_a.uuid in visited or item_a.uuid not in frame_hashes:
-                continue
-            cluster = [item_a]
-            for item_b in all_unmatched[i + 1:]:
-                if item_b.uuid in visited or item_b.uuid not in frame_hashes:
-                    continue
+                compare_progress_callback(i + 1, n_hashable)
+            for j in range(i + 1, n_hashable):
                 if video_frames_similar(
-                    frame_hashes[item_a.uuid],
-                    frame_hashes[item_b.uuid],
+                    frame_hashes[hashable_items[i].uuid],
+                    frame_hashes[hashable_items[j].uuid],
                     threshold=config.dhash_threshold,
                 ):
-                    cluster.append(item_b)
-                    visited.add(item_b.uuid)
-            if len(cluster) >= 2:
-                visited.add(item_a.uuid)
+                    _union_v(i, j)
+
+        vid_cluster_map: dict[int, list[int]] = defaultdict(list)
+        for i in range(n_hashable):
+            vid_cluster_map[_find_v(i)].append(i)
+
+        for indices in vid_cluster_map.values():
+            if len(indices) >= 2:
                 near_groups.append(
                     DuplicateGroup(
                         group_id=0,
                         match_type=MatchType.NEAR,
-                        items=cluster,
+                        items=[hashable_items[i] for i in indices],
                     )
                 )
 
@@ -784,6 +807,19 @@ _HEIC_UTIS = {"public.heic", "public.heif"}
 _JPEG_UTIS = {"public.jpeg"}
 
 
+def _base_filename(item: MediaItem) -> str:
+    """Return the lowercased stem of the original filename (no extension)."""
+    name = item.original_filename or item.filename
+    # Strip extension — handle multi-part like .HEIC, .JPG, .JPEG
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return stem.lower()
+
+
+# Cross-format dHash threshold multiplier: HEIC→JPEG re-encoding changes
+# enough bits that the standard threshold can miss true duplicates.
+_CROSS_FORMAT_THRESHOLD_FACTOR = 1.3
+
+
 def find_heic_jpeg_duplicates(
     cache: CacheDB,
     config: Config,
@@ -793,9 +829,16 @@ def find_heic_jpeg_duplicates(
 ) -> list[DuplicateGroup]:
     """Find duplicates between HEIC and JPEG versions of the same photo.
 
-    Compares HEIC photos against JPEG photos using perceptual hashing (dHash
-    with pHash confirmation). Creates cross-format groups where the same image
-    exists in both formats. HEIC is preferred as the keeper via quality scoring.
+    Uses a two-strategy approach:
+    1. **Filename matching** — items sharing the same base filename (e.g.
+       ``IMG_1234.HEIC`` and ``IMG_1234.JPG``) are grouped directly with
+       pHash confirmation, catching pairs that perceptual hashing alone
+       might miss due to re-encoding artefacts.
+    2. **Perceptual hashing** — dHash comparison (with a widened cross-format
+       threshold) followed by pHash confirmation for remaining items.
+
+    Creates cross-format groups where the same image exists in both formats.
+    HEIC is preferred as the keeper via quality scoring.
 
     Pass *exclude_uuids* to skip items already in other duplicate groups.
     """
@@ -824,6 +867,30 @@ def find_heic_jpeg_duplicates(
     logger.debug(
         "HEIC vs JPEG: %d HEIC items, %d JPEG items",
         len(heic_items), len(jpeg_items),
+    )
+
+    # ── Strategy 1: Filename-based matching ──────────────────────────
+    # Build lookup of base filename → JPEG items for fast matching.
+    jpeg_by_basename: dict[str, list[MediaItem]] = defaultdict(list)
+    for item in jpeg_items:
+        jpeg_by_basename[_base_filename(item)].append(item)
+
+    filename_pairs: list[tuple[MediaItem, list[MediaItem]]] = []
+    filename_matched_heic_uuids: set[str] = set()
+    filename_matched_jpeg_uuids: set[str] = set()
+
+    for heic in heic_items:
+        basename = _base_filename(heic)
+        matching_jpegs = jpeg_by_basename.get(basename)
+        if matching_jpegs:
+            filename_pairs.append((heic, matching_jpegs))
+            filename_matched_heic_uuids.add(heic.uuid)
+            for j in matching_jpegs:
+                filename_matched_jpeg_uuids.add(j.uuid)
+
+    logger.debug(
+        "HEIC vs JPEG filename match: %d HEIC items matched %d JPEG items",
+        len(filename_matched_heic_uuids), len(filename_matched_jpeg_uuids),
     )
 
     # Compute dHash for items that need it
@@ -864,11 +931,46 @@ def find_heic_jpeg_duplicates(
             if not item.dhash_small and item.uuid in new_small:
                 item.dhash_small = new_small[item.uuid]
 
-    # Filter to items with valid dHash and pre-convert to ints
-    hashed_heic = [i for i in heic_items if i.dhash]
-    hashed_jpeg = [i for i in jpeg_items if i.dhash]
+    # Confirm filename-matched pairs with pHash
+    groups: list[DuplicateGroup] = []
+    confirmed_jpeg_uuids: set[str] = set()
+
+    for heic, jpegs in filename_pairs:
+        cluster = [heic] + [j for j in jpegs if j.uuid not in confirmed_jpeg_uuids]
+        if len(cluster) < 2:
+            continue
+        confirmed_clusters = _confirm_with_phash(cluster, cache, config)
+        for confirmed in confirmed_clusters:
+            has_heic = any(i.uti in _HEIC_UTIS for i in confirmed)
+            has_jpeg = any(i.uti in _JPEG_UTIS for i in confirmed)
+            if has_heic and has_jpeg:
+                groups.append(
+                    DuplicateGroup(
+                        group_id=0,
+                        match_type=MatchType.NEAR,
+                        items=confirmed,
+                    )
+                )
+                for item in confirmed:
+                    if item.uti in _JPEG_UTIS:
+                        confirmed_jpeg_uuids.add(item.uuid)
+
+    logger.debug(
+        "HEIC vs JPEG filename strategy: %d groups confirmed", len(groups),
+    )
+
+    # ── Strategy 2: Perceptual hash matching ─────────────────────────
+    # Skip items already matched by filename strategy
+    hashed_heic = [
+        i for i in heic_items
+        if i.dhash and i.uuid not in filename_matched_heic_uuids
+    ]
+    hashed_jpeg = [
+        i for i in jpeg_items
+        if i.dhash and i.uuid not in confirmed_jpeg_uuids
+    ]
     if not hashed_heic or not hashed_jpeg:
-        return []
+        return groups
 
     heic_ints = [hash_hex_to_int(i.dhash) for i in hashed_heic]
     jpeg_ints = [hash_hex_to_int(i.dhash) for i in hashed_jpeg]
@@ -880,11 +982,11 @@ def find_heic_jpeg_duplicates(
         hash_hex_to_int(i.dhash_small) if i.dhash_small else None
         for i in hashed_jpeg
     ]
-    threshold = config.dhash_threshold
-    small_threshold = config.dhash_small_threshold
+    # Widen threshold for cross-format comparison
+    threshold = int(config.dhash_threshold * _CROSS_FORMAT_THRESHOLD_FACTOR)
+    small_threshold = int(config.dhash_small_threshold * _CROSS_FORMAT_THRESHOLD_FACTOR)
 
     # Match each HEIC item against JPEG items by dHash similarity
-    # First pass: collect all dHash-matched candidates
     heic_to_jpeg_matches: list[tuple[int, list[int]]] = []
     matched_jpeg_indices: set[int] = set()
 
@@ -907,6 +1009,7 @@ def find_heic_jpeg_duplicates(
 
         if jpeg_match_indices:
             heic_to_jpeg_matches.append((idx, jpeg_match_indices))
+            matched_jpeg_indices.update(jpeg_match_indices)
 
     # Batch-compute pHash for all items involved in dHash matches
     candidate_items: dict[str, MediaItem] = {}
@@ -932,9 +1035,8 @@ def find_heic_jpeg_duplicates(
             if uuid in candidate_items:
                 candidate_items[uuid].phash = ph
 
-    # Second pass: pHash confirmation
-    groups: list[DuplicateGroup] = []
-    matched_jpeg_uuids: set[str] = set()
+    # pHash confirmation
+    matched_jpeg_uuids: set[str] = set(confirmed_jpeg_uuids)
 
     for heic_idx, jpeg_indices in heic_to_jpeg_matches:
         heic = hashed_heic[heic_idx]
@@ -946,8 +1048,8 @@ def find_heic_jpeg_duplicates(
             continue
 
         cluster = [heic] + jpeg_matches
-        confirmed = _confirm_with_phash(cluster, cache, config)
-        if len(confirmed) >= 2:
+        confirmed_clusters = _confirm_with_phash(cluster, cache, config)
+        for confirmed in confirmed_clusters:
             has_heic = any(i.uti in _HEIC_UTIS for i in confirmed)
             has_jpeg = any(i.uti in _JPEG_UTIS for i in confirmed)
             if has_heic and has_jpeg:
@@ -1189,8 +1291,8 @@ def find_grainy_duplicates(
     for clear_uuid, grainy_items in matches.items():
         clear_item = clear_by_uuid[clear_uuid]
         cluster = [clear_item] + grainy_items
-        confirmed = _confirm_with_phash(cluster, cache, config)
-        if len(confirmed) >= 2:
+        confirmed_clusters = _confirm_with_phash(cluster, cache, config)
+        for confirmed in confirmed_clusters:
             groups.append(
                 DuplicateGroup(
                     group_id=0,

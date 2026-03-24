@@ -31,6 +31,38 @@ PAGE_SIZE = 50
 
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".webm"}
 
+RAW_EXTENSIONS = {
+    ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".dng",
+    ".raf", ".rw2", ".orf", ".pef", ".srw",
+}
+
+
+def _raw_to_jpeg(path, max_size: int = 480) -> bytes | None:
+    """Convert a RAW image to JPEG bytes using macOS sips."""
+    import tempfile
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpeg", delete=True) as tmp:
+            tmp_path = tmp.name
+        result = subprocess.run(
+            ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "80",
+             "-Z", str(max_size), str(path), "--out", tmp_path],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            from pathlib import Path as _Path
+            data = _Path(tmp_path).read_bytes()
+            _Path(tmp_path).unlink(missing_ok=True)
+            if data:
+                return data
+        else:
+            from pathlib import Path as _Path
+            _Path(tmp_path).unlink(missing_ok=True)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
 
 def _video_frame_jpeg(path, thumb_size: int = THUMB_SIZE) -> bytes | None:
     """Extract a single frame from a video using ffmpeg and return JPEG bytes."""
@@ -65,6 +97,11 @@ def _thumbnail_b64(item: MediaItem) -> str | None:
         suffix = item.path.suffix.lower()
         if suffix in VIDEO_EXTENSIONS:
             data = _video_frame_jpeg(item.path)
+            if data:
+                return base64.b64encode(data).decode("ascii")
+            return None
+        if suffix in RAW_EXTENSIONS:
+            data = _raw_to_jpeg(item.path, max_size=THUMB_SIZE)
             if data:
                 return base64.b64encode(data).decode("ascii")
             return None
@@ -256,6 +293,51 @@ def _build_item_card(
             badges.append('<span class="badge badge-corrupt">Frozen</span>')
         else:
             badges.append('<span class="badge badge-corrupt">Suspect Corrupt</span>')
+
+    # Format tag from UTI
+    _UTI_LABELS = {
+        "public.heic": "HEIC",
+        "public.heif": "HEIF",
+        "public.jpeg": "JPEG",
+        "public.png": "PNG",
+        "public.tiff": "TIFF",
+        "com.compuserve.gif": "GIF",
+        "public.mpeg-4": "MP4",
+        "com.apple.quicktime-movie": "MOV",
+        "public.avi": "AVI",
+        "com.adobe.raw-image": "RAW",
+        "com.adobe.dng-image": "DNG",
+        "com.canon.cr2-raw-image": "CR2",
+        "com.canon.cr3-raw-image": "CR3",
+        "com.nikon.nrw-raw-image": "NRW",
+        "com.nikon.raw-image": "NEF",
+        "com.sony.arw-raw-image": "ARW",
+        "com.fuji.raw-image": "RAF",
+        "com.panasonic.rw2-raw-image": "RW2",
+        "com.apple.photo-booth-image": "Photo Booth",
+        "public.webp": "WebP",
+        "com.microsoft.bmp": "BMP",
+    }
+    if item.uti:
+        fmt_label = _UTI_LABELS.get(item.uti)
+        if not fmt_label and "raw" in item.uti.lower():
+            fmt_label = "RAW"
+        if fmt_label:
+            is_raw = "raw" in item.uti.lower() or fmt_label in ("DNG", "CR2", "CR3", "NEF", "NRW", "ARW", "RAF", "RW2")
+            css_class = "badge-raw" if is_raw else "badge-format"
+            badges.append(f'<span class="badge {css_class}">{fmt_label}</span>')
+
+    # Type tags
+    if item.media_type == MediaType.LIVE_PHOTO or item.live_photo_uuid:
+        badges.append('<span class="badge badge-livephoto">Live Photo</span>')
+    if item.is_screenshot:
+        badges.append('<span class="badge badge-screenshot">Screenshot</span>')
+    if item.is_selfie:
+        badges.append('<span class="badge badge-selfie">Selfie</span>')
+    if item.is_burst:
+        badges.append('<span class="badge badge-burst">Burst</span>')
+    if item.is_hidden:
+        badges.append('<span class="badge badge-hidden">Hidden</span>')
 
     from media_scanner.ui.formatters import format_date, format_duration, format_resolution, format_size
 
@@ -645,6 +727,13 @@ body {
 .badge-keep { background: var(--keeper-border); color: #fff; }
 .badge-delete { background: var(--delete-border); color: #fff; }
 .badge-corrupt { background: #ff9500; color: #fff; }
+.badge-format { background: #636366; color: #fff; }
+.badge-raw { background: #bf5af2; color: #fff; }
+.badge-livephoto { background: #30d158; color: #fff; }
+.badge-screenshot { background: #5ac8fa; color: #fff; }
+.badge-selfie { background: #ff6482; color: #fff; }
+.badge-burst { background: #ffd60a; color: #1c1c1e; }
+.badge-hidden { background: #98989d; color: #fff; }
 .thumb-wrap { position: relative; }
 .play-overlay {
     position: absolute;
@@ -835,6 +924,11 @@ body {
 body.size-small .item-card { flex: 0 1 220px; }
 body.size-medium .item-card { flex: 0 1 340px; }
 body.size-large .item-card { flex: 0 1 480px; }
+/* Browse grid sizes */
+body.size-small .browse-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+body.size-medium .browse-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+body.size-large .browse-grid { grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); }
+body.size-xlarge .browse-grid { grid-template-columns: repeat(auto-fill, minmax(550px, 1fr)); }
 """
 
 
@@ -1276,6 +1370,7 @@ def generate_page_html(
     title: str = "Duplicate Review",
     per_page: int = PAGE_SIZE,
     active_filter: str = "all",
+    sort_order: str = "default",
 ) -> str:
     """Generate interactive HTML for a single page of groups (server-side pagination)."""
     actions = actions or {}
@@ -1300,7 +1395,7 @@ def generate_page_html(
     }
     keeper_map_json = json.dumps(keeper_map)
 
-    pagination = _build_pagination_html(page, total_pages, per_page, active_filter)
+    pagination = _build_pagination_html(page, total_pages, per_page, active_filter, sort_order)
 
     filter_label = CATEGORY_LABELS.get(active_filter, "All")
     merge_page_label = "Merge All on Page" if active_filter == "all" else f"Merge {filter_label} on Page"
@@ -1312,6 +1407,16 @@ def generate_page_html(
         for n in per_page_options
     )
 
+    sort_options = [
+        ("default", "Default"),
+        ("most_items", "Most Items First"),
+        ("least_items", "Least Items First"),
+    ]
+    sort_select = "".join(
+        f'<option value="{val}"{" selected" if val == sort_order else ""}>{label}</option>'
+        for val, label in sort_options
+    )
+
     sticky_header = f"""
     <div class="sticky-bar" id="sticky-bar">
         <span id="review-count">{total_groups} groups remaining</span>
@@ -1319,6 +1424,12 @@ def generate_page_html(
         <button class="btn btn-merge-all" id="merge-all-btn" onclick="mergeAllOnPage()">{merge_page_label}</button>
         <button class="btn btn-merge-all-global" id="merge-all-global-btn" onclick="mergeAllGroups()">{merge_all_label}</button>
         {'<button class="btn btn-flag-corrupt" id="flag-corrupt-btn" onclick="flagAllCorrupt()">Add Corrupt to Album</button>' if active_filter == "suspect_corrupt" else ''}
+        <div class="size-selector">
+            <label for="sort-select">Sort:</label>
+            <select id="sort-select" onchange="changeSort(this.value)">
+                {sort_select}
+            </select>
+        </div>
         <div class="size-selector">
             <label for="per-page-select">Per page:</label>
             <select id="per-page-select" onchange="changePerPage(this.value)">
@@ -1336,7 +1447,7 @@ def generate_page_html(
         <span class="sticky-hint">Click photos to keep (green border). Unselected photos go to delete album.</span>
     </div>"""
 
-    js_block = _paginated_interactive_js(keeper_map_json, page, total_pages, per_page, active_filter)
+    js_block = _paginated_interactive_js(keeper_map_json, page, total_pages, per_page, active_filter, sort_order)
 
     # Pass all groups from server for accurate sidebar counts
     sidebar = _build_sidebar_html(ReviewHandler_all_groups or groups, active_filter)
@@ -1378,7 +1489,8 @@ ReviewHandler_all_groups: list[DuplicateGroup] | None = None
 
 
 def _build_pagination_html(
-    page: int, total_pages: int, per_page: int = PAGE_SIZE, active_filter: str = "all"
+    page: int, total_pages: int, per_page: int = PAGE_SIZE,
+    active_filter: str = "all", sort_order: str = "default",
 ) -> str:
     """Build pagination controls with prev/next and page numbers."""
     if total_pages <= 1:
@@ -1386,7 +1498,8 @@ def _build_pagination_html(
 
     pp = f"&per_page={per_page}" if per_page != PAGE_SIZE else ""
     ff = f"&filter={active_filter}" if active_filter != "all" else ""
-    pp = pp + ff
+    ss = f"&sort={sort_order}" if sort_order != "default" else ""
+    pp = pp + ff + ss
     links = []
 
     if page > 1:
@@ -1461,6 +1574,7 @@ def _pagination_css() -> str:
 def _paginated_interactive_js(
     keeper_map_json: str, page: int, total_pages: int,
     per_page: int = PAGE_SIZE, active_filter: str = "all",
+    sort_order: str = "default",
 ) -> str:
     """JS for paginated interactive mode with Merge All on Page."""
     return f"""
@@ -1471,6 +1585,7 @@ const currentPage = {page};
 const totalPages = {total_pages};
 const perPage = {per_page};
 const activeFilter = '{active_filter}';
+const activeSort = '{sort_order}';
 let mergeAllRunning = false;
 
 document.body.classList.add('size-large');
@@ -1480,11 +1595,16 @@ function buildUrl(params) {{
     p.set('page', params.page || 1);
     if (params.per_page && params.per_page !== {PAGE_SIZE}) p.set('per_page', params.per_page);
     if (params.filter && params.filter !== 'all') p.set('filter', params.filter);
+    if (params.sort && params.sort !== 'default') p.set('sort', params.sort);
     return '/?' + p.toString();
 }}
 
 function changePerPage(value) {{
-    window.location.href = buildUrl({{page: 1, per_page: value, filter: activeFilter}});
+    window.location.href = buildUrl({{page: 1, per_page: value, filter: activeFilter, sort: activeSort}});
+}}
+
+function changeSort(value) {{
+    window.location.href = buildUrl({{page: 1, per_page: perPage, filter: activeFilter, sort: value}});
 }}
 
 function playVideo(overlay) {{
@@ -1625,7 +1745,7 @@ async function mergeGroup(groupId) {{
 const categoryLabels = {json.dumps(CATEGORY_LABELS)};
 
 function filterCategory(category) {{
-    window.location.href = buildUrl({{page: 1, per_page: perPage, filter: category}});
+    window.location.href = buildUrl({{page: 1, per_page: perPage, filter: category, sort: activeSort}});
 }}
 
 function getVisibleGroups() {{
@@ -1709,11 +1829,11 @@ async function mergeAllOnPage() {{
                     : (data.category_counts || {{}})[activeFilter] || 0;
                 if (filterCount > 0) {{
                     btn.textContent = `${{filterCount}} more — Reloading...`;
-                    setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: activeFilter}}), 800);
+                    setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: activeFilter, sort: activeSort}}), 800);
                 }} else {{
                     // This category is done but others remain — navigate to all
                     btn.textContent = `${{data.total_groups}} remaining — Reloading...`;
-                    setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: 'all'}}), 800);
+                    setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: 'all', sort: activeSort}}), 800);
                 }}
             }} else {{
                 btn.textContent = 'All Done!';
@@ -1821,7 +1941,7 @@ async function mergeAllGroups() {{
             if (data.total_groups > 0) {{
                 // Navigate to show remaining groups
                 globalBtn.textContent = `${{data.total_groups}} remaining — Reloading...`;
-                setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: 'all'}}), 800);
+                setTimeout(() => window.location.href = buildUrl({{page: 1, per_page: perPage, filter: 'all', sort: activeSort}}), 800);
             }} else {{
                 globalBtn.textContent = 'All Done!';
                 document.getElementById('merge-all-btn').disabled = true;
@@ -1853,3 +1973,807 @@ async function updateCounts() {{
 
 updateCounts();
 </script>"""
+
+
+# ---------------------------------------------------------------------------
+# Browse mode — view all photos individually (not grouped as duplicates)
+# ---------------------------------------------------------------------------
+
+BROWSE_CATEGORIES = {
+    "all": "All",
+    "photo": "Photos",
+    "video": "Videos",
+    "live_photo": "Live Photos",
+    "screenshot": "Screenshots",
+    "selfie": "Selfies",
+    "burst": "Bursts",
+    "favorite": "Favorites",
+    "edited": "Edited",
+    "hidden": "Hidden",
+    "raw": "RAW",
+    "icloud": "iCloud Only",
+}
+
+
+def _item_browse_tags(item: MediaItem) -> list[str]:
+    """Return category tags for a single item (for sidebar filtering)."""
+    tags = []
+    if item.media_type == MediaType.PHOTO:
+        tags.append("photo")
+    elif item.media_type == MediaType.VIDEO:
+        tags.append("video")
+    elif item.media_type == MediaType.LIVE_PHOTO:
+        tags.append("live_photo")
+    if item.live_photo_uuid:
+        if "live_photo" not in tags:
+            tags.append("live_photo")
+    if item.is_screenshot:
+        tags.append("screenshot")
+    if item.is_selfie:
+        tags.append("selfie")
+    if item.is_burst:
+        tags.append("burst")
+    if item.is_favorite:
+        tags.append("favorite")
+    if item.is_edited:
+        tags.append("edited")
+    if item.is_hidden:
+        tags.append("hidden")
+    if item.uti and "raw" in item.uti.lower():
+        tags.append("raw")
+    if not item.path or not item.path.exists():
+        tags.append("icloud")
+    return tags
+
+
+def _build_browse_card(item: MediaItem) -> str:
+    """Build HTML for a single item card in browse mode."""
+    from media_scanner.ui.formatters import format_date, format_duration, format_resolution, format_size
+
+    is_cloud_only = not item.path or not item.path.exists()
+    is_video = item.path and item.path.suffix.lower() in VIDEO_EXTENSIONS
+
+    if is_cloud_only:
+        img_tag = (
+            '<div class="no-thumb cloud-only">'
+            '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+            'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>'
+            '<span>iCloud Only</span>'
+            '</div>'
+        )
+    else:
+        img_tag = (
+            f'<img src="/thumb/{item.uuid}" alt="{html_mod.escape(item.filename)}" loading="lazy">'
+        )
+        if is_video:
+            img_tag += (
+                f'<div class="play-overlay" data-uuid="{item.uuid}" '
+                f'onclick="event.stopPropagation(); playVideo(this)">'
+                '<svg width="24" height="24" viewBox="0 0 24 24" fill="white">'
+                '<polygon points="8,5 20,12 8,19"/></svg></div>'
+            )
+
+    # Badges (info tags)
+    badges = []
+    if is_cloud_only:
+        badges.append('<span class="badge badge-cloud">iCloud</span>')
+
+    _UTI_LABELS = {
+        "public.heic": "HEIC",
+        "public.heif": "HEIF",
+        "public.jpeg": "JPEG",
+        "public.png": "PNG",
+        "public.tiff": "TIFF",
+        "com.compuserve.gif": "GIF",
+        "public.mpeg-4": "MP4",
+        "com.apple.quicktime-movie": "MOV",
+        "public.avi": "AVI",
+        "com.adobe.raw-image": "RAW",
+        "com.adobe.dng-image": "DNG",
+        "com.canon.cr2-raw-image": "CR2",
+        "com.canon.cr3-raw-image": "CR3",
+        "com.nikon.nrw-raw-image": "NRW",
+        "com.nikon.raw-image": "NEF",
+        "com.sony.arw-raw-image": "ARW",
+        "com.fuji.raw-image": "RAF",
+        "com.panasonic.rw2-raw-image": "RW2",
+        "com.apple.photo-booth-image": "Photo Booth",
+        "public.webp": "WebP",
+        "com.microsoft.bmp": "BMP",
+    }
+    if item.uti:
+        fmt_label = _UTI_LABELS.get(item.uti)
+        if not fmt_label and "raw" in item.uti.lower():
+            fmt_label = "RAW"
+        if fmt_label:
+            is_raw = "raw" in item.uti.lower() or fmt_label in (
+                "DNG", "CR2", "CR3", "NEF", "NRW", "ARW", "RAF", "RW2",
+            )
+            css_class = "badge-raw" if is_raw else "badge-format"
+            badges.append(f'<span class="badge {css_class}">{fmt_label}</span>')
+
+    has_live_video = (
+        item.live_photo_video_path
+        and item.live_photo_video_path.exists()
+        and not is_cloud_only
+    )
+    if item.media_type == MediaType.LIVE_PHOTO or item.live_photo_uuid:
+        if has_live_video:
+            badges.append(
+                f'<span class="badge badge-livephoto badge-live-playable" '
+                f'data-uuid="{item.uuid}" '
+                f'onmouseenter="livePhotoHover(this)" '
+                f'onmouseleave="livePhotoLeave(this)">'
+                'Live Photo</span>'
+            )
+        else:
+            badges.append('<span class="badge badge-livephoto">Live Photo</span>')
+    if item.is_screenshot:
+        badges.append('<span class="badge badge-screenshot">Screenshot</span>')
+    if item.is_selfie:
+        badges.append('<span class="badge badge-selfie">Selfie</span>')
+    if item.is_burst:
+        badges.append('<span class="badge badge-burst">Burst</span>')
+    if item.is_hidden:
+        badges.append('<span class="badge badge-hidden">Hidden</span>')
+    if item.is_favorite:
+        badges.append('<span class="badge badge-favorite">Favorite</span>')
+    if item.is_edited:
+        badges.append('<span class="badge badge-edited">Edited</span>')
+
+    date_str = format_date(item.date_created)
+    size_str = format_size(item.file_size)
+    res_str = format_resolution(item.width, item.height)
+    duration_str = format_duration(item.duration) if item.duration else None
+
+    meta_parts = [size_str, res_str]
+    if duration_str:
+        meta_parts.append(duration_str)
+    meta_line = " &middot; ".join(meta_parts)
+
+    extra_meta = []
+    if item.has_gps:
+        extra_meta.append("GPS")
+    if item.persons:
+        extra_meta.append(f"{len(item.persons)} people")
+    if item.albums:
+        extra_meta.append(f"{len(item.albums)} albums")
+    extra_str = " &middot; ".join(extra_meta) if extra_meta else ""
+
+    tags = _item_browse_tags(item)
+    tags_attr = " ".join(tags)
+
+    return f"""
+    <div class="browse-card" data-uuid="{item.uuid}" data-tags="{tags_attr}" onclick="toggleSelect(this, event)">
+        <div class="select-check"></div>
+        <div class="thumb-wrap">
+            {img_tag}
+            <div class="thumb-badges">{''.join(badges)}</div>
+        </div>
+        <div class="item-info">
+            <div class="item-filename" title="{html_mod.escape(item.filename)}">{html_mod.escape(item.filename)}</div>
+            <div class="item-meta">{date_str}</div>
+            <div class="item-meta">{meta_line}</div>
+            {f'<div class="item-meta secondary">{extra_str}</div>' if extra_str else ''}
+            <div class="browse-actions">
+                <button class="btn btn-browse-delete" onclick="event.stopPropagation(); browseAction('{item.uuid}', 'delete')" title="Add to Delete album">Delete</button>
+                <button class="btn btn-browse-keep" onclick="event.stopPropagation(); browseAction('{item.uuid}', 'keep')" title="Add to Keep album">Keep</button>
+            </div>
+        </div>
+    </div>"""
+
+
+def _browse_sidebar_html(
+    category_counts: dict[str, int], active_filter: str = "all", total: int = 0,
+) -> str:
+    """Build sidebar for browse mode."""
+    items = []
+    for key, label in BROWSE_CATEGORIES.items():
+        count = total if key == "all" else category_counts.get(key, 0)
+        if key == "all" or count > 0:
+            active = " active" if key == active_filter else ""
+            items.append(
+                f'<button class="sidebar-item{active}" data-filter="{key}"'
+                f' onclick="browseFilter(\'{key}\')">'
+                f'<span class="sidebar-label">{label}</span>'
+                f'<span class="sidebar-count">{count}</span>'
+                f'</button>'
+            )
+    return f"""
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-title">Categories</div>
+        {''.join(items)}
+    </nav>"""
+
+
+def _browse_css() -> str:
+    """Additional CSS for browse mode."""
+    return """
+.browse-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+    padding: 0 0 24px;
+}
+.browse-card {
+    background: var(--card-bg);
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: border-color 0.15s, transform 0.15s, opacity 0.3s;
+}
+.browse-card:hover {
+    transform: scale(1.02);
+}
+.browse-card.actioned {
+    pointer-events: none;
+    opacity: 0;
+    transform: scale(0.9);
+    transition: opacity 0.25s, transform 0.25s;
+}
+.browse-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+.btn-browse-delete {
+    flex: 1;
+    background: var(--delete-border);
+    color: #fff;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.btn-browse-delete:hover { opacity: 0.85; }
+.btn-browse-keep {
+    flex: 1;
+    background: var(--keeper-border);
+    color: #fff;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.btn-browse-keep:hover { opacity: 0.85; }
+.badge-favorite { background: #ff375f; color: #fff; }
+.badge-edited { background: #5e5ce6; color: #fff; }
+.browse-card { cursor: pointer; position: relative; user-select: none; -webkit-user-select: none; }
+.select-check {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.7);
+    background: rgba(0,0,0,0.3);
+    z-index: 6;
+    transition: background 0.15s, border-color 0.15s;
+    pointer-events: none;
+}
+.browse-card.selected .select-check {
+    background: var(--exact-bg);
+    border-color: var(--exact-bg);
+}
+.browse-card.selected .select-check::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    left: 7px;
+    width: 6px;
+    height: 10px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+.browse-card.selected {
+    border-color: var(--exact-bg);
+    box-shadow: 0 0 0 2px var(--exact-bg);
+}
+.bulk-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.btn-browse-clear {
+    background: var(--border);
+    color: var(--text);
+    border: none;
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.btn-browse-clear:hover { opacity: 0.85; }
+.badge-cloud { background: #5ac8fa; color: #fff; }
+.thumb-badges {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    right: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    z-index: 5;
+}
+.thumb-badges .badge {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    background-color: rgba(0,0,0,0.55);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.thumb-badges .badge-cloud { background-color: rgba(90,200,250,0.8); }
+.thumb-badges .badge-raw { background-color: rgba(191,90,242,0.8); }
+.thumb-badges .badge-livephoto { background-color: rgba(48,209,88,0.8); }
+.badge-live-playable { cursor: pointer; }
+.badge-live-playable:hover { background-color: rgba(48,209,88,1) !important; }
+.thumb-badges .badge-screenshot { background-color: rgba(90,200,250,0.8); }
+.thumb-badges .badge-selfie { background-color: rgba(255,100,130,0.8); }
+.thumb-badges .badge-burst { background-color: rgba(255,214,10,0.8); color: #1c1c1e; }
+.thumb-badges .badge-hidden { background-color: rgba(152,152,157,0.8); }
+.thumb-badges .badge-favorite { background-color: rgba(255,55,95,0.8); }
+.thumb-badges .badge-edited { background-color: rgba(94,92,230,0.8); }
+.no-thumb.cloud-only {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    width: 100%;
+    height: 100%;
+    background: var(--card-bg);
+}
+"""
+
+
+def _browse_js() -> str:
+    """JS for browse mode interactions."""
+    return """
+<script>
+let activeFilter = new URLSearchParams(window.location.search).get('filter') || 'all';
+let actionedCount = 0;
+
+const savedSize = localStorage.getItem('browse-size') || 'xlarge';
+document.body.classList.add('size-' + savedSize);
+const sizeSelect = document.getElementById('size-select');
+if (sizeSelect) sizeSelect.value = savedSize;
+
+function buildBrowseUrl(params) {
+    const p = new URLSearchParams();
+    if (params.page && params.page > 1) p.set('page', params.page);
+    if (params.per_page) p.set('per_page', params.per_page);
+    if (params.filter && params.filter !== 'all') p.set('filter', params.filter);
+    if (params.sort && params.sort !== 'default') p.set('sort', params.sort);
+    return '/?' + p.toString();
+}
+
+function browseFilter(category) {
+    const perPage = document.getElementById('per-page-select')?.value || 100;
+    const sort = document.getElementById('sort-select')?.value || 'default';
+    window.location.href = buildBrowseUrl({page: 1, per_page: perPage, filter: category, sort: sort});
+}
+
+function changeBrowsePerPage(value) {
+    const sort = document.getElementById('sort-select')?.value || 'default';
+    window.location.href = buildBrowseUrl({page: 1, per_page: value, filter: activeFilter, sort: sort});
+}
+
+function changeBrowseSort(value) {
+    const perPage = document.getElementById('per-page-select')?.value || 100;
+    window.location.href = buildBrowseUrl({page: 1, per_page: perPage, filter: activeFilter, sort: value});
+}
+
+function playVideo(overlay) {
+    const uuid = overlay.dataset.uuid;
+    const wrap = overlay.closest('.thumb-wrap');
+    const video = document.createElement('video');
+    video.src = '/video/' + uuid;
+    video.controls = true;
+    video.autoplay = true;
+    video.style.width = '100%';
+    video.style.height = '100%';
+    video.style.objectFit = 'contain';
+    wrap.innerHTML = '';
+    wrap.appendChild(video);
+}
+
+async function browseAction(uuid, action) {
+    const card = document.querySelector(`.browse-card[data-uuid="${uuid}"]`);
+    if (!card || card.classList.contains('actioned')) return;
+
+    const endpoint = action === 'delete' ? '/api/delete' : '/api/keep';
+    try {
+        const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({uuid: uuid}),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            // Decrement sidebar counts for this card's tags
+            const tags = (card.dataset.tags || '').split(' ').filter(Boolean);
+            updateSidebarCounts(tags);
+
+            card.classList.add('actioned');
+            actionedCount++;
+            document.getElementById('browse-status').textContent =
+                actionedCount + ' item(s) processed';
+            // Remove from DOM after fade-out so the grid reflows
+            card.addEventListener('transitionend', () => card.remove(), {once: true});
+        } else {
+            alert(data.error || 'Action failed');
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+function updateSidebarCounts(removedTags) {
+    // Decrement "All" count
+    const allBtn = document.querySelector('.sidebar-item[data-filter="all"] .sidebar-count');
+    if (allBtn) allBtn.textContent = Math.max(0, parseInt(allBtn.textContent) - 1);
+
+    // Decrement each matching category count
+    for (const tag of removedTags) {
+        const btn = document.querySelector(`.sidebar-item[data-filter="${tag}"] .sidebar-count`);
+        if (btn) btn.textContent = Math.max(0, parseInt(btn.textContent) - 1);
+    }
+}
+
+function changeSize(value) {
+    document.body.className = document.body.className.replace(/size-\\w+/, '');
+    document.body.classList.add('size-' + value);
+    localStorage.setItem('browse-size', value);
+}
+
+// --- Multi-select ---
+const selectedUuids = new Set();
+let lastClickedCard = null;
+
+function getVisibleCards() {
+    return Array.from(document.querySelectorAll('.browse-card:not(.actioned)'));
+}
+
+function selectCard(card) {
+    const uuid = card.dataset.uuid;
+    if (!card.classList.contains('selected')) {
+        card.classList.add('selected');
+        selectedUuids.add(uuid);
+    }
+}
+
+function deselectCard(card) {
+    const uuid = card.dataset.uuid;
+    card.classList.remove('selected');
+    selectedUuids.delete(uuid);
+}
+
+function toggleSelect(card, event) {
+    if (card.classList.contains('actioned')) return;
+
+    if (event.shiftKey && lastClickedCard && lastClickedCard !== card) {
+        // Shift+click: select range from lastClickedCard to this card
+        const cards = getVisibleCards();
+        const startIdx = cards.indexOf(lastClickedCard);
+        const endIdx = cards.indexOf(card);
+        if (startIdx !== -1 && endIdx !== -1) {
+            const from = Math.min(startIdx, endIdx);
+            const to = Math.max(startIdx, endIdx);
+            for (let i = from; i <= to; i++) {
+                selectCard(cards[i]);
+            }
+        }
+        // Prevent text selection from shift-click
+        window.getSelection()?.removeAllRanges();
+    } else if (event.metaKey || event.ctrlKey) {
+        // Cmd/Ctrl+click: toggle this card without affecting others
+        if (card.classList.contains('selected')) {
+            deselectCard(card);
+        } else {
+            selectCard(card);
+        }
+        lastClickedCard = card;
+    } else {
+        // Plain click: clear others, toggle this one
+        const wasSelected = card.classList.contains('selected');
+        clearSelectionSilent();
+        if (!wasSelected) {
+            selectCard(card);
+        }
+        lastClickedCard = card;
+    }
+
+    updateBulkUI();
+}
+
+function clearSelectionSilent() {
+    selectedUuids.clear();
+    document.querySelectorAll('.browse-card.selected').forEach(c => c.classList.remove('selected'));
+}
+
+function clearSelection() {
+    clearSelectionSilent();
+    lastClickedCard = null;
+    updateBulkUI();
+}
+
+function updateBulkUI() {
+    const n = selectedUuids.size;
+    const controls = document.getElementById('bulk-controls');
+    const hint = document.getElementById('sticky-hint');
+    if (n > 0) {
+        controls.style.display = '';
+        document.getElementById('select-count').textContent = n + ' selected';
+        if (hint) hint.style.display = 'none';
+    } else {
+        controls.style.display = 'none';
+        if (hint) hint.style.display = '';
+    }
+}
+
+async function bulkAction(action) {
+    const uuids = Array.from(selectedUuids);
+    if (uuids.length === 0) return;
+
+    const controls = document.getElementById('bulk-controls');
+    const countEl = document.getElementById('select-count');
+    const origText = countEl.textContent;
+    countEl.textContent = `Processing ${uuids.length}...`;
+
+    try {
+        const resp = await fetch('/api/bulk-action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({uuids: uuids, action: action}),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            // Collect all tags for sidebar update, then remove cards
+            const allTags = [];
+            uuids.forEach(uuid => {
+                const card = document.querySelector(`.browse-card[data-uuid="${uuid}"]`);
+                if (card) {
+                    const tags = (card.dataset.tags || '').split(' ').filter(Boolean);
+                    allTags.push(...tags);
+                    card.classList.add('actioned');
+                    card.addEventListener('transitionend', () => card.remove(), {once: true});
+                }
+            });
+            // Update sidebar: decrement "all" by count, each tag by its occurrences
+            const allBtn = document.querySelector('.sidebar-item[data-filter="all"] .sidebar-count');
+            if (allBtn) allBtn.textContent = Math.max(0, parseInt(allBtn.textContent) - uuids.length);
+            const tagCounts = {};
+            allTags.forEach(t => tagCounts[t] = (tagCounts[t] || 0) + 1);
+            for (const [tag, count] of Object.entries(tagCounts)) {
+                const btn = document.querySelector(`.sidebar-item[data-filter="${tag}"] .sidebar-count`);
+                if (btn) btn.textContent = Math.max(0, parseInt(btn.textContent) - count);
+            }
+
+            actionedCount += data.count;
+            document.getElementById('browse-status').textContent =
+                actionedCount + ' item(s) processed';
+            selectedUuids.clear();
+            updateBulkUI();
+        } else {
+            alert(data.error || 'Bulk action failed');
+            countEl.textContent = origText;
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+        countEl.textContent = origText;
+    }
+}
+
+function livePhotoHover(badge) {
+    const uuid = badge.dataset.uuid;
+    const card = badge.closest('.browse-card');
+    if (!card) return;
+    const wrap = card.querySelector('.thumb-wrap');
+    if (!wrap || wrap.dataset.liveActive) return;
+
+    // Save original content so we can restore on leave
+    wrap.dataset.liveActive = '1';
+    wrap._originalHTML = wrap.innerHTML;
+
+    const video = document.createElement('video');
+    video.src = '/live-video/' + uuid;
+    video.autoplay = true;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.style.width = '100%';
+    video.style.height = '100%';
+    video.style.objectFit = 'contain';
+
+    // Keep the badge overlay visible on top of the video
+    const badgesDiv = wrap.querySelector('.thumb-badges');
+    wrap.innerHTML = '';
+    wrap.appendChild(video);
+    if (badgesDiv) wrap.appendChild(badgesDiv);
+}
+
+function livePhotoLeave(badge) {
+    const card = badge.closest('.browse-card');
+    if (!card) return;
+    const wrap = card.querySelector('.thumb-wrap');
+    if (!wrap || !wrap.dataset.liveActive) return;
+
+    // Stop the video and restore the original thumbnail
+    const video = wrap.querySelector('video');
+    if (video) {
+        video.pause();
+        video.src = '';
+    }
+    wrap.innerHTML = wrap._originalHTML;
+    delete wrap.dataset.liveActive;
+    delete wrap._originalHTML;
+}
+</script>"""
+
+
+def generate_browse_page_html(
+    items: list[MediaItem],
+    page: int,
+    total_pages: int,
+    total_items: int,
+    category_counts: dict[str, int],
+    per_page: int = 100,
+    active_filter: str = "all",
+    sort_order: str = "default",
+    title: str = "Library Browser",
+    total_available: int | None = None,
+) -> str:
+    """Generate the HTML page for browsing all library items."""
+    if total_available is None:
+        total_available = total_items
+    cards_html = [_build_browse_card(item) for item in items]
+
+    from media_scanner.ui.formatters import format_count
+
+    stats_summary = (
+        f"{format_count(total_items)} items &middot; "
+        f"Page {page} of {total_pages}"
+    )
+
+    pagination = _build_browse_pagination(page, total_pages, per_page, active_filter, sort_order)
+    sidebar = _browse_sidebar_html(category_counts, active_filter, total_available)
+
+    per_page_options = [50, 100, 200, 500]
+    per_page_select = "".join(
+        f'<option value="{n}"{" selected" if n == per_page else ""}>{n}</option>'
+        for n in per_page_options
+    )
+
+    sort_options = [
+        ("default", "Date (Newest)"),
+        ("oldest", "Date (Oldest)"),
+        ("largest", "Largest First"),
+        ("smallest", "Smallest First"),
+        ("name", "Filename"),
+    ]
+    sort_select = "".join(
+        f'<option value="{val}"{" selected" if val == sort_order else ""}>{label}</option>'
+        for val, label in sort_options
+    )
+
+    size_select = """
+        <select id="size-select" onchange="changeSize(this.value)">
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+            <option value="xlarge" selected>X-Large</option>
+        </select>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title} — Page {page}</title>
+<style>
+{_css(True)}
+{_pagination_css()}
+{_sidebar_css()}
+{_browse_css()}
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>{title}</h1>
+</div>
+<div class="sticky-bar" id="sticky-bar">
+    <span id="browse-status">{total_items} items</span>
+    <span class="bulk-controls" id="bulk-controls" style="display:none;">
+        <span id="select-count">0 selected</span>
+        <button class="btn btn-browse-delete" onclick="bulkAction('delete')">Delete Selected</button>
+        <button class="btn btn-browse-keep" onclick="bulkAction('keep')">Keep Selected</button>
+        <button class="btn btn-browse-clear" onclick="clearSelection()">Clear</button>
+    </span>
+    <div class="size-selector">
+        <label for="sort-select">Sort:</label>
+        <select id="sort-select" onchange="changeBrowseSort(this.value)">
+            {sort_select}
+        </select>
+    </div>
+    <div class="size-selector">
+        <label for="per-page-select">Per page:</label>
+        <select id="per-page-select" onchange="changeBrowsePerPage(this.value)">
+            {per_page_select}
+        </select>
+    </div>
+    <div class="size-selector">
+        <label for="size-select">Size:</label>
+        {size_select}
+    </div>
+    <span class="sticky-hint" id="sticky-hint">Click cards to select, then bulk Delete/Keep. Or use buttons on each card.</span>
+</div>
+<div class="layout-wrapper">
+{sidebar}
+<div class="main-content">
+<div class="stats">{stats_summary}</div>
+{pagination}
+<div class="browse-grid">
+{''.join(cards_html)}
+</div>
+{pagination}
+<div class="footer">Generated by media-scanner</div>
+</div>
+</div>
+{_browse_js()}
+</body>
+</html>"""
+
+
+def _build_browse_pagination(
+    page: int, total_pages: int, per_page: int = 100,
+    active_filter: str = "all", sort_order: str = "default",
+) -> str:
+    """Build pagination for browse mode."""
+    if total_pages <= 1:
+        return ""
+
+    pp = f"&per_page={per_page}" if per_page != 100 else ""
+    ff = f"&filter={active_filter}" if active_filter != "all" else ""
+    ss = f"&sort={sort_order}" if sort_order != "default" else ""
+    qs = pp + ff + ss
+    links = []
+
+    if page > 1:
+        links.append(f'<a class="page-link" href="/?page={page - 1}{qs}">&laquo; Prev</a>')
+    else:
+        links.append('<span class="page-link disabled">&laquo; Prev</span>')
+
+    pages_to_show: set[int] = set()
+    pages_to_show.add(1)
+    pages_to_show.add(total_pages)
+    for p in range(max(1, page - 2), min(total_pages, page + 2) + 1):
+        pages_to_show.add(p)
+
+    last = 0
+    for p in sorted(pages_to_show):
+        if p - last > 1:
+            links.append('<span class="page-ellipsis">&hellip;</span>')
+        if p == page:
+            links.append(f'<span class="page-link current">{p}</span>')
+        else:
+            links.append(f'<a class="page-link" href="/?page={p}{qs}">{p}</a>')
+        last = p
+
+    if page < total_pages:
+        links.append(f'<a class="page-link" href="/?page={page + 1}{qs}">Next &raquo;</a>')
+    else:
+        links.append('<span class="page-link disabled">Next &raquo;</span>')
+
+    return f'<div class="pagination">{"".join(links)}</div>'

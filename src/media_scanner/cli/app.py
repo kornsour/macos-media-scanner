@@ -73,6 +73,7 @@ from media_scanner.cli.short_videos import short_videos  # noqa: E402
 from media_scanner.cli.small_photos import small_photos  # noqa: E402
 from media_scanner.cli.lowres_videos import lowres_videos  # noqa: E402
 from media_scanner.cli.rapid_shots import rapid_shots  # noqa: E402
+from media_scanner.cli.browse import browse  # noqa: E402
 
 app.command()(scan)
 app.command()(dupes)
@@ -88,3 +89,4 @@ app.command(name="short-videos")(short_videos)
 app.command(name="small-photos")(small_photos)
 app.command(name="lowres-videos")(lowres_videos)
 app.command(name="rapid-shots")(rapid_shots)
+app.command()(browse)

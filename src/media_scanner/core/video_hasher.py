@@ -165,10 +165,27 @@ def motion_score(video_path: Path, num_frames: int = 5) -> float:
     pairs using dHash.  A frozen/corrupted video will have nearly
     identical frames throughout, yielding a low score.
 
-    Returns the fraction of consecutive frame pairs that show motion
-    (hamming distance > 3).  1.0 = full motion, 0.0 = completely frozen.
+    Uses a two-factor approach for accuracy:
+    1. Binary motion detection: fraction of consecutive pairs with hamming
+       distance > MOTION_HAMMING_THRESHOLD (catches fully frozen videos).
+    2. Normalized mean hamming distance: provides granular signal for
+       borderline cases (e.g. mostly-still videos with slight jitter).
+
+    The final score blends both factors (70% binary, 30% mean distance)
+    to avoid both false positives and false negatives.
     """
     from media_scanner.core.hasher import hamming_distance
+
+    # Minimum hamming distance between consecutive frames to count as motion.
+    # For 256-bit dHash (hash_size=16), 3 bits ≈ 1.2% change — enough to
+    # distinguish real motion from JPEG compression noise.
+    MOTION_HAMMING_THRESHOLD = 3
+
+    # Max expected mean hamming distance for normalization.
+    # Typical real-motion videos average ~40-80 bits of change between
+    # evenly-spaced frames; cap at 64 (25% of 256 bits) to keep the
+    # normalized score in a useful range.
+    MAX_MEAN_DISTANCE = 64
 
     frames = extract_sampled_frames(video_path, num_frames=num_frames)
     if len(frames) < 2:
@@ -185,14 +202,21 @@ def motion_score(video_path: Path, num_frames: int = 5) -> float:
         if len(hashes) < 2:
             return 1.0
 
-        # Count pairs with actual motion (hamming distance > 3)
-        motion_pairs = 0
+        distances = []
         total_pairs = len(hashes) - 1
         for i in range(total_pairs):
-            if hamming_distance(hashes[i], hashes[i + 1]) > 3:
-                motion_pairs += 1
+            distances.append(hamming_distance(hashes[i], hashes[i + 1]))
 
-        return motion_pairs / total_pairs
+        # Factor 1: fraction of pairs with motion (binary)
+        motion_pairs = sum(1 for d in distances if d > MOTION_HAMMING_THRESHOLD)
+        binary_score = motion_pairs / total_pairs
+
+        # Factor 2: normalized mean distance (continuous)
+        mean_dist = sum(distances) / total_pairs
+        continuous_score = min(mean_dist / MAX_MEAN_DISTANCE, 1.0)
+
+        # Blend: binary dominates (catches frozen), continuous adds granularity
+        return binary_score * 0.7 + continuous_score * 0.3
     finally:
         _cleanup_frames(frames)
 
