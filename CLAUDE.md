@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 macOS Photos library analyzer CLI. Finds duplicates, surfaces quality issues, provides library health insights. Read-only access via osxphotos — deletions go to a Photos album for manual review.
 
+> **Archive folder**: `archive/` holds historical/superseded documentation and records. Its contents are historical only — do not treat anything under `archive/` as current, and do not use it to inform new work.
+
 ## Commands
 
 ```bash
