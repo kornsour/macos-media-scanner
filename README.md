@@ -4,6 +4,8 @@ A CLI tool for analyzing and cleaning up large macOS Photos libraries. Finds dup
 
 Built on [osxphotos](https://github.com/RhetTbull/osxphotos) (read-only access to your Photos library) — no photos are ever modified or deleted directly. Instead, items you mark for deletion are collected into a Photos album for manual review.
 
+> **Note:** The `archive/` folder contains historical/superseded documentation and records. It reflects past decisions or project state, not the current setup — don't rely on it to understand how the project works today.
+
 ## Prerequisites
 
 - macOS 14+ with Photos.app
