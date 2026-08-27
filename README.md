@@ -1,5 +1,7 @@
 # macos-media-scanner
 
+[![CI](https://github.com/kornsour/macos-media-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/kornsour/macos-media-scanner/actions/workflows/ci.yml)
+
 A CLI tool for analyzing and cleaning up large macOS Photos libraries. Finds duplicate and near-duplicate photos/videos, surfaces quality issues, and provides library health insights.
 
 Built on [osxphotos](https://github.com/RhetTbull/osxphotos) (read-only access to your Photos library) — no photos are ever modified or deleted directly. Instead, items you mark for deletion are collected into a Photos album for manual review.
