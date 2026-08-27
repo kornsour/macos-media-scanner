@@ -230,6 +230,70 @@ media-scanner actions --export ~/Desktop/keepers  # Copy keepers to a folder
 
 `--apply` uses PhotoKit (via a compiled Swift .app bundle) for fast, indexed UUID lookups. The app is compiled on first use and cached at `~/.media-scanner/PhotosBridge.app`. If Xcode Command Line Tools aren't installed, it falls back to AppleScript automatically. Keepers are also added to a "Media Scanner - Keepers" album for easy verification.
 
+### `browse`
+
+Open an interactive browser UI to page through every item in your library — not just duplicates — and add items to Photos albums directly. This is the most interactive command; it starts a local HTTP server and opens your browser to it.
+
+```bash
+media-scanner browse                        # Browse the whole library
+media-scanner browse --filter screenshot    # Pre-filter to one category
+media-scanner browse --port 9000            # Custom port
+media-scanner browse --no-open              # Don't launch a browser automatically
+```
+
+The browse UI provides:
+
+- Paginated view of the full library, sortable by newest, oldest, largest, smallest, or filename
+- A category sidebar to filter by `photo`, `video`, `live_photo`, `screenshot`, `selfie`, `burst`, `favorite`, `edited`, `hidden`, or `raw` — matching `--filter`
+- **Delete** and **Keep** buttons per item — adds the item to the "Media Scanner - To Delete" or "Media Scanner - Keepers" album immediately via PhotoKit (falling back to AppleScript)
+- Bulk actions to send every visible item to Delete or Keep in one request
+- Actioned items disappear from the list, and category counts update to exclude them
+
+Press Ctrl+C to stop the server.
+
+### `short-videos`
+
+Find short videos (1-3s by default) — often accidental recordings — and add them to a Photos album.
+
+```bash
+media-scanner short-videos                  # Videos 1-3s long (default)
+media-scanner short-videos --min 0.5 --max 2  # Custom duration range
+media-scanner short-videos --dry-run        # List matches without creating an album
+media-scanner short-videos --album "My Album"  # Custom album name
+```
+
+### `small-photos`
+
+Find small photos (<=15KB by default) — often thumbnails, stickers, or corrupted images — and add them to a Photos album.
+
+```bash
+media-scanner small-photos                  # Photos <=15KB (default)
+media-scanner small-photos --max-kb 50      # Custom size threshold
+media-scanner small-photos --dry-run        # List matches without creating an album
+```
+
+### `lowres-videos`
+
+Find low-resolution videos (<=720p by default) and add them to a Photos album.
+
+```bash
+media-scanner lowres-videos                 # Videos <=720p (default)
+media-scanner lowres-videos --max-height 480  # Custom resolution threshold
+media-scanner lowres-videos --dry-run       # List matches without creating an album
+```
+
+### `rapid-shots`
+
+Find photos taken in quick succession (burst-style sequences) and add them to a Photos album.
+
+```bash
+media-scanner rapid-shots                   # Sequences of 3+ photos within 3s (default)
+media-scanner rapid-shots --gap 5 --min-burst 5  # Custom gap and sequence length
+media-scanner rapid-shots --dry-run         # List matching sequences without creating an album
+```
+
+For all four of `short-videos`, `small-photos`, `lowres-videos`, and `rapid-shots`: matches are added to a dedicated Photos album via PhotoKit (falling back to AppleScript), just like `actions --apply`. Use `--dry-run` to preview matches first, and `--album` to override the default album name.
+
 ## How It Works
 
 ### Architecture
